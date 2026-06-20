@@ -1,0 +1,53 @@
+{
+  "summary": "Backend-only smoke testing for ticketing system. 18/18 functional checks passed against public URL. Auth (admin+agent), issue-types CRUD, customer lookup (mock), ticket create (customer+self), WhatsApp mock messages (created+closed), ticket list/filter/search, ticket detail with events, transfer/comment/status flows, role-based access, and reports/summary all working.",
+  "tested_scope": ["backend", "auth", "integration"],
+  "passed": [
+    "POST /api/auth/login admin -> token+user (note: token field is 'token' not 'access_token')",
+    "POST /api/auth/login agent works",
+    "GET /api/auth/me returns user with Bearer token",
+    "GET /api/issue-types returns 5 pre-seeded types (Billing, Technical, Service Request, Complaint, General Inquiry)",
+    "GET /api/customers/lookup?mobile=9999900001 returns 'Rohan Sharma' (MOCKED)",
+    "GET /api/customers/lookup?mobile=0000000000 returns 404",
+    "POST /api/tickets (source=customer) creates ticket TKT-00001 and MOCK WhatsApp 'created' message is logged (verified via /api/whatsapp/messages)",
+    "POST /api/tickets (source=self) creates ticket with no WhatsApp message (verified empty)",
+    "GET /api/tickets returns list; filters status=closed, issue_type_id, mine=true, search all work",
+    "GET /api/tickets/{id} returns {ticket, events} with 'created' event included",
+    "POST /api/tickets/{id}/transfer reassigns and logs 'transferred' event with meta.from/meta.to",
+    "POST /api/tickets/{id}/comment logs 'comment' event (note: body field is 'message', not 'comment')",
+    "POST /api/tickets/{id}/status in_progress logs 'status_change' event with from/to meta",
+    "POST /api/tickets/{id}/status closed logs status_change AND triggers MOCK WhatsApp 'closed' message (2 WA msgs total for ticket)",
+    "POST /api/tickets/{id}/status with same status returns 400 'Ticket already in this status'",
+    "POST /api/auth/register as agent returns 403 'Admin access required'",
+    "POST /api/issue-types as agent returns 403; admin can create/PATCH/delete",
+    "GET /api/reports/summary returns totals, by_issue_type, by_assignee, by_priority",
+    "Agent token can access /api/tickets, /api/issue-types, /api/auth/me (200 each)"
+  ],
+  "failed": [
+    {
+      "area": "spec deviation - issue-type update method",
+      "issue": "Update issue-type uses PATCH /api/issue-types/{id} (spec mentioned generic 'update'); PUT returns 405. Not a bug, but worth noting for frontend integration.",
+      "evidence": "PUT -> 'Method Not Allowed'; PATCH -> 200 OK",
+      "priority": "LOW"
+    },
+    {
+      "area": "spec deviation - request body field names",
+      "issue": "POST /api/tickets requires 'title' (not 'subject'); POST /api/tickets/{id}/comment requires 'message' (not 'comment'). Tests passed once correct field names used. Frontend must align.",
+      "evidence": "422 missing field errors until corrected",
+      "priority": "LOW"
+    },
+    {
+      "area": "spec deviation - login response key",
+      "issue": "Login returns 'token' key, spec mentioned 'access_token'. Frontend must read 'token'.",
+      "evidence": "Login JSON: {\"token\": \"...\", \"user\": {...}}",
+      "priority": "LOW"
+    }
+  ],
+  "action_items": [
+    "Ensure frontend uses 'token' (not 'access_token') from login response",
+    "Ensure frontend ticket creation sends 'title' field; comment sends 'message' field",
+    "Ensure frontend uses PATCH for issue-type updates"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested"},
+  "retest_needed": false,
+  "full_testing_deferred": true
+}

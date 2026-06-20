@@ -4,6 +4,7 @@
   "private": true,
   "dependencies": {
     "@hookform/resolvers": "5.0.1",
+    "@phosphor-icons/react": "^2.1.10",
     "@radix-ui/react-accordion": "1.2.8",
     "@radix-ui/react-alert-dialog": "1.1.11",
     "@radix-ui/react-aspect-ratio": "1.1.4",
@@ -119,6 +120,7 @@
     "**/axios/form-data": "4.0.4",
     "**/jsdom/form-data": "3.0.4",
     "**/postcss-svgo/svgo": "2.8.1",
+    "webpack-dev-server": "4.15.2",
     "**/webpack-dev-server/ws": "8.20.1",
     "**/postcss-load-config/yaml": "2.8.3",
     "**/cosmiconfig/yaml": "1.10.3",
