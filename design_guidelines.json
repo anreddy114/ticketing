@@ -1,0 +1,79 @@
+{
+  "theme": "light",
+  "archetype": "Swiss & High-Contrast",
+  "typography": {
+    "heading_font": "Chivo",
+    "body_font": "IBM Plex Sans",
+    "h1": "text-4xl sm:text-5xl font-black tracking-tight",
+    "h2": "text-2xl sm:text-3xl font-bold tracking-tight",
+    "h3": "text-xl sm:text-2xl font-bold tracking-tight",
+    "h4": "text-lg sm:text-xl font-bold tracking-tight",
+    "body": "text-base leading-relaxed",
+    "small": "text-sm text-gray-500",
+    "overline": "text-xs font-bold uppercase tracking-[0.2em] text-gray-500"
+  },
+  "colors": {
+    "background": "#FFFFFF",
+    "surface": "#F9FAFB",
+    "primary_text": "#0A0A0A",
+    "secondary_text": "#4B5563",
+    "border": "#E5E7EB",
+    "action": "#0047AB",
+    "action_hover": "#0033A0",
+    "warning": "#FF2400",
+    "success": "#16A34A",
+    "info": "#0EA5E9"
+  },
+  "layout_and_spacing": {
+    "container_padding": "p-6 md:p-8",
+    "widget_padding": "p-6",
+    "gap_large": "gap-8",
+    "gap_medium": "gap-6",
+    "gap_small": "gap-4",
+    "grid_strategy": "THE CONTROL ROOM GRID: Dense, strict grid hierarchy. Base Grid: grid-cols-1 md:grid-cols-3 lg:grid-cols-4. Widgets are col-span-1 or col-span-2. Use pure HTML/Tailwind classes for grid layout. No massive empty spaces."
+  },
+  "components": {
+    "header": "Solid white background with 1px bottom border (border-border). Must include logo, primary nav links (Dashboard, Tickets, Reports, Admin), and user avatar.",
+    "cards": "Flat background (bg-white), 1px subtle border (border-border), no shadow. Hover: slight lift (-translate-y-0.5), subtle shadow (shadow-sm), border color darkens.",
+    "buttons": "Action Blue background for primary with white text. Minimalist, geometric (rounded-sm or rounded-md). Focus states must have high contrast rings.",
+    "tables": "High density. 1px borders separating rows. Row hover state with very light gray (hover:bg-gray-50).",
+    "forms": "Inputs with 1px borders, white background. Focus states must use Action Blue ring (focus:ring-2 focus:ring-[#0047AB] focus:border-transparent).",
+    "status_badges": "High contrast minimal style. Red text/border for 'Open/Urgent', Green for 'Closed', Gray for 'Pending'. Use thin borders (border border-current px-2 py-0.5 text-xs font-bold)."
+  },
+  "animations": {
+    "hover": "transition-all duration-200 ease-in-out",
+    "page_load": "staggered fade-in for grid items (opacity-0 to opacity-100)"
+  },
+  "media": {
+    "images": {
+      "login_background": {
+        "url": "https://images.pexels.com/photos/3137038/pexels-photo-3137038.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Minimalist office architecture for login screen background."
+      },
+      "company_logo_placeholder": {
+        "url": "https://images.pexels.com/photos/4252899/pexels-photo-4252899.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Abstract black and white modern logo placeholder."
+      },
+      "user_avatar": {
+        "url": "https://images.pexels.com/photos/37148308/pexels-photo-37148308.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Professional user avatar for the header."
+      }
+    }
+  },
+  "icon_library": "@phosphor-icons/react",
+  "testing_attributes": {
+    "rule": "All interactive and key informational elements MUST include a data-testid attribute.",
+    "format": "kebab-case, role-based. Example: data-testid='ticket-submit-button', data-testid='customer-search-input'"
+  },
+  "instructions_to_main_agent": [
+    "Build the dashboard using the 'Control Room' grid layout for optimal data density.",
+    "Install and use @phosphor-icons/react for all iconography.",
+    "Use Shadcn UI components for complex interactive elements (Select, Dialog, Form, Table).",
+    "Ensure all interactive elements have data-testid attributes for automated testing.",
+    "Implement the UI using .js (JSX) files, NOT .tsx.",
+    "For the 'Search customer by mobile number' feature: design an inline search input with a clear loading state that displays the customer's name on confirmation.",
+    "Include a 'WhatsApp Message Sent' toast notification mechanism when a ticket is closed.",
+    "Ensure hover states and focus rings are distinct and accessible across all forms and tables.",
+    "Maintain strict typography scaling: Headings use Chivo, body uses IBM Plex Sans."
+  ]
+}
