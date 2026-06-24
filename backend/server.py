@@ -529,7 +529,10 @@ class WhatsappTestIn(BaseModel):
 @api.post("/whatsapp/test")
 async def whatsapp_test(payload: WhatsappTestIn, _: dict = Depends(require_admin)):
     """Send a test WhatsApp message to verify Meta integration end-to-end."""
-    tpl_params = ["Test User", "TKT-TEST", "Test Issue"] if payload.kind == "created" else ["Test User", "TKT-TEST"]
+    if payload.kind == "created":
+        tpl_params = ["Test User", "TKT-TEST", "Test Issue"]
+    else:
+        tpl_params = ["Test User", "TKT-TEST", "Test Issue", "Test Agent"]
     doc = await send_whatsapp_message(
         payload.mobile,
         f"[TEST] Ticket {payload.kind} notification — please ignore.",
@@ -726,7 +729,12 @@ async def change_status(ticket_id: str, payload: TicketStatusIn, user: dict = De
         )
         await send_whatsapp_message(
             t["customer_mobile"], msg, ticket_id, "closed",
-            template_params=[t.get("customer_name") or "Customer", t["ticket_number"]],
+            template_params=[
+                t.get("customer_name") or "Customer",
+                t["ticket_number"],
+                t.get("issue_type_name") or "—",
+                t.get("assigned_to_name") or "Support Team",
+            ],
         )
 
     return await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
