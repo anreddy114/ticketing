@@ -408,14 +408,27 @@ def _format_msisdn(mobile: str) -> str:
     return digits
 
 
-async def send_whatsapp_message(mobile: str, message: str, ticket_id: str, kind: str):
-    """Send a WhatsApp text message via Meta Cloud API.
-    Falls back to logging-only if WhatsApp env vars are not configured.
-    All attempts are persisted to whatsapp_messages collection.
+async def send_whatsapp_message(mobile: str, message: str, ticket_id: str, kind: str, template_params: Optional[List[str]] = None):
+    """Send a WhatsApp message via Meta Cloud API.
+
+    For "created" and "closed" kinds we send an approved **template** (Meta requires
+    a template for business-initiated messages). `message` is also stored locally
+    so agents see what was conveyed even though Meta renders the approved template.
+
+    Env vars:
+      WHATSAPP_TEMPLATE_CREATED — template name for ticket-created notifications
+      WHATSAPP_TEMPLATE_CLOSED  — template name for ticket-closed notifications
+      WHATSAPP_TEMPLATE_LANG    — template language code (e.g. en_US)
     """
     version = os.environ.get("WHATSAPP_GRAPH_VERSION", "v21.0")
     phone_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
     token = os.environ.get("WHATSAPP_ACCESS_TOKEN")
+    lang = os.environ.get("WHATSAPP_TEMPLATE_LANG", "en_US")
+    tpl_map = {
+        "created": os.environ.get("WHATSAPP_TEMPLATE_CREATED"),
+        "closed": os.environ.get("WHATSAPP_TEMPLATE_CLOSED"),
+    }
+    template_name = tpl_map.get(kind)
 
     to = _format_msisdn(mobile)
     doc = {
@@ -428,6 +441,8 @@ async def send_whatsapp_message(mobile: str, message: str, ticket_id: str, kind:
         "provider": "meta_whatsapp_cloud",
         "provider_message_id": None,
         "provider_response": None,
+        "template_name": template_name,
+        "template_params": template_params or [],
         "error": None,
         "created_at": now_iso(),
     }
@@ -435,21 +450,40 @@ async def send_whatsapp_message(mobile: str, message: str, ticket_id: str, kind:
     if not phone_id or not token:
         doc["status"] = "skipped_not_configured"
         await db.whatsapp_messages.insert_one(doc)
-        logging.warning("WhatsApp not configured — message not sent.")
         return doc
 
     url = f"https://graph.facebook.com/{version}/{phone_id}/messages"
-    payload = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": to,
-        "type": "text",
-        "text": {"preview_url": False, "body": message},
-    }
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
+    if template_name:
+        components = []
+        if template_params:
+            components = [{
+                "type": "body",
+                "parameters": [{"type": "text", "text": str(p)} for p in template_params],
+            }]
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {"code": lang},
+                **({"components": components} if components else {}),
+            },
+        }
+    else:
+        # Free-form text (only works inside an open 24h customer window)
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to,
+            "type": "text",
+            "text": {"preview_url": False, "body": message},
+        }
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     try:
-        async with httpx.AsyncClient(timeout=15) as cli:
+        async with httpx.AsyncClient(timeout=20) as cli:
             r = await cli.post(url, json=payload, headers=headers)
         try:
             body = r.json()
@@ -462,13 +496,16 @@ async def send_whatsapp_message(mobile: str, message: str, ticket_id: str, kind:
         else:
             doc["status"] = "failed"
             err = body.get("error") if isinstance(body, dict) else None
-            doc["error"] = (err or {}).get("message") if isinstance(err, dict) else f"HTTP {r.status_code}"
+            if isinstance(err, dict):
+                doc["error"] = f"{err.get('code', '')}: {err.get('message', '')} — {err.get('error_user_msg') or ''}".strip(" —")
+            else:
+                doc["error"] = f"HTTP {r.status_code}"
     except httpx.HTTPError as e:
         doc["status"] = "failed"
         doc["error"] = f"network: {e}"
 
     await db.whatsapp_messages.insert_one(doc)
-    logging.info(f"[WhatsApp:{doc['status']}] -> {to}: {message[:80]}…")
+    logging.info(f"[WhatsApp:{doc['status']}] -> {to} ({kind}/{template_name or 'text'})")
     return doc
 
 
@@ -482,6 +519,24 @@ async def list_whatsapp_messages(
         q["ticket_id"] = ticket_id
     msgs = await db.whatsapp_messages.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
     return msgs
+
+
+class WhatsappTestIn(BaseModel):
+    mobile: str
+    kind: Literal["created", "closed"] = "created"
+
+
+@api.post("/whatsapp/test")
+async def whatsapp_test(payload: WhatsappTestIn, _: dict = Depends(require_admin)):
+    """Send a test WhatsApp message to verify Meta integration end-to-end."""
+    tpl_params = ["Test User", "TKT-TEST", "Test Issue"] if payload.kind == "created" else ["Test User", "TKT-TEST"]
+    doc = await send_whatsapp_message(
+        payload.mobile,
+        f"[TEST] Ticket {payload.kind} notification — please ignore.",
+        "test", payload.kind, template_params=tpl_params,
+    )
+    doc.pop("_id", None)
+    return doc
 
 
 # ---------- Tickets ----------
@@ -554,13 +609,16 @@ async def create_ticket(payload: TicketCreateIn, user: dict = Depends(get_curren
     await db.tickets.insert_one(ticket)
     await log_event(ticket["id"], user, "created", f"Ticket created and assigned to {assigned_user['name']}")
 
-    # Send WhatsApp acknowledgement to customer (MOCK)
+    # Send WhatsApp acknowledgement to customer
     if payload.source == "customer":
         msg = (
             f"Hi {payload.customer_name}, your ticket {tnum} has been created. "
             f"Issue: {issue['name']}. Our team will reach out shortly."
         )
-        await send_whatsapp_message(payload.customer_mobile, msg, ticket["id"], "created")
+        await send_whatsapp_message(
+            payload.customer_mobile, msg, ticket["id"], "created",
+            template_params=[payload.customer_name or "Customer", tnum, issue["name"]],
+        )
 
     ticket.pop("_id", None)
     return ticket
@@ -660,13 +718,16 @@ async def change_status(ticket_id: str, payload: TicketStatusIn, user: dict = De
         meta={"from": t["status"], "to": payload.status},
     )
 
-    # Send WhatsApp on close (MOCK)
+    # Send WhatsApp on close
     if payload.status == "closed" and t.get("source") == "customer" and t.get("customer_mobile"):
         msg = (
             f"Hi {t.get('customer_name', 'Customer')}, your ticket {t['ticket_number']} "
             f"has been closed. Thank you for reaching out."
         )
-        await send_whatsapp_message(t["customer_mobile"], msg, ticket_id, "closed")
+        await send_whatsapp_message(
+            t["customer_mobile"], msg, ticket_id, "closed",
+            template_params=[t.get("customer_name") or "Customer", t["ticket_number"]],
+        )
 
     return await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
 
