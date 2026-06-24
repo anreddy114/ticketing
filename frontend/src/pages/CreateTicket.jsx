@@ -68,6 +68,11 @@ export default function CreateTicket() {
       if (source === "customer") {
         payload.customer_mobile = customer.mobile;
         payload.customer_name = customer.name;
+        payload.customer_email = customer.email;
+        payload.customer_package = customer.package;
+        payload.customer_expiry = customer.expiry_date;
+        payload.customer_partner = customer.partner;
+        payload.customer_acc_id = customer.acc_id;
       }
       const { data } = await api.post("/tickets", payload);
       toast.success(`Ticket ${data.ticket_number} created`);
@@ -139,21 +144,41 @@ export default function CreateTicket() {
             </Button>
           </div>
           <p className="text-xs text-gray-500">
-            Demo mobiles: 9999900001 · 9999900002 · 9999900003 · 9999900004 · 9999900005
+            Enter the customer's mobile number to fetch live subscriber details from SmartPlay portal.
           </p>
 
           {customer && (
             <div className="border border-gray-200 rounded-sm p-4 bg-gray-50/60 space-y-3" data-testid="customer-confirm-card">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-xs uppercase tracking-wider text-gray-500 font-bold">Found in DB</p>
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1">
+                  <p className="text-xs uppercase tracking-wider text-gray-500 font-bold">Found in SmartPlay DB</p>
                   <p className="font-display text-2xl font-black">{customer.name}</p>
                   <p className="text-xs text-gray-500 mt-1">
-                    {customer.mobile} · {customer.email} · {customer.city}
+                    {customer.mobile}{customer.email ? ` · ${customer.email}` : ""}{customer.acc_id ? ` · Acc #${customer.acc_id}` : ""}
                   </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+                    {customer.package && (
+                      <div>
+                        <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">Package</p>
+                        <p className="text-xs font-medium">{customer.package}</p>
+                      </div>
+                    )}
+                    {customer.expiry_date && (
+                      <div>
+                        <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">Expiry</p>
+                        <p className="text-xs font-medium">{customer.expiry_date}</p>
+                      </div>
+                    )}
+                    {customer.partner && (
+                      <div>
+                        <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">Partner</p>
+                        <p className="text-xs font-medium">{customer.partner}{customer.partner_code ? ` (${customer.partner_code})` : ""}</p>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 {confirmed ? (
-                  <span className="inline-flex items-center gap-1 text-[#16A34A] text-xs font-bold uppercase tracking-wider">
+                  <span className="inline-flex items-center gap-1 text-[#16A34A] text-xs font-bold uppercase tracking-wider shrink-0">
                     <CheckCircle size={16} weight="fill" /> Confirmed
                   </span>
                 ) : (
@@ -161,7 +186,7 @@ export default function CreateTicket() {
                     type="button"
                     onClick={() => setConfirmed(true)}
                     data-testid="customer-confirm-button"
-                    className="bg-[#16A34A] hover:bg-green-700 text-white rounded-sm"
+                    className="bg-[#16A34A] hover:bg-green-700 text-white rounded-sm shrink-0"
                   >
                     <CheckCircle size={16} weight="bold" className="mr-1" /> Confirm name &amp; proceed
                   </Button>

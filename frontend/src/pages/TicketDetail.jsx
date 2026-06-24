@@ -225,6 +225,35 @@ export default function TicketDetail() {
                 <p className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
                   <Phone size={12} weight="bold" /> {ticket.customer_mobile}
                 </p>
+                {ticket.customer_email && (
+                  <p className="text-xs text-gray-500 mt-0.5">{ticket.customer_email}</p>
+                )}
+                {ticket.customer_acc_id && (
+                  <p className="text-[11px] text-gray-400 mt-0.5">Acc #{ticket.customer_acc_id}</p>
+                )}
+              </div>
+            )}
+            {ticket.source === "customer" && (ticket.customer_package || ticket.customer_expiry || ticket.customer_partner) && (
+              <div className="border-t border-gray-100 pt-3 space-y-2">
+                <p className="text-[11px] uppercase text-gray-400 tracking-wider font-bold">SmartPlay</p>
+                {ticket.customer_package && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-gray-400">Package</p>
+                    <p className="text-xs font-medium">{ticket.customer_package}</p>
+                  </div>
+                )}
+                {ticket.customer_expiry && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-gray-400">Expiry</p>
+                    <p className="text-xs font-medium">{ticket.customer_expiry}</p>
+                  </div>
+                )}
+                {ticket.customer_partner && (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-gray-400">Partner</p>
+                    <p className="text-xs font-medium">{ticket.customer_partner}</p>
+                  </div>
+                )}
               </div>
             )}
             <div>

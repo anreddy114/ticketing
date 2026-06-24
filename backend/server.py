@@ -16,6 +16,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Respons
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
+import httpx
 
 # ---------- DB ----------
 mongo_url = os.environ["MONGO_URL"]
@@ -141,6 +142,11 @@ class TicketCreateIn(BaseModel):
     # Customer source fields
     customer_mobile: Optional[str] = None
     customer_name: Optional[str] = None
+    customer_email: Optional[str] = None
+    customer_package: Optional[str] = None
+    customer_expiry: Optional[str] = None
+    customer_partner: Optional[str] = None
+    customer_acc_id: Optional[int] = None
     # Common
     issue_type_id: str
     title: str
@@ -353,24 +359,43 @@ async def delete_issue_type(type_id: str, _: dict = Depends(require_admin)):
     return {"ok": True}
 
 
-# ---------- Customer lookup (MOCK external API) ----------
-# Mock database of customers — replace with your real API later.
-MOCK_CUSTOMERS = {
-    "9999900001": {"name": "Rohan Sharma", "email": "rohan@example.com", "city": "Mumbai"},
-    "9999900002": {"name": "Priya Patel", "email": "priya@example.com", "city": "Bengaluru"},
-    "9999900003": {"name": "Arjun Verma", "email": "arjun@example.com", "city": "Delhi"},
-    "9999900004": {"name": "Sneha Iyer", "email": "sneha@example.com", "city": "Chennai"},
-    "9999900005": {"name": "Vikram Singh", "email": "vikram@example.com", "city": "Pune"},
-}
-
-
+# ---------- Customer lookup (SmartPlay portal API) ----------
 @api.get("/customers/lookup")
 async def lookup_customer(mobile: str = Query(..., min_length=4), _: dict = Depends(get_current_user)):
-    """MOCK endpoint: replace internals with your real customer DB API call."""
-    cust = MOCK_CUSTOMERS.get(mobile.strip())
-    if not cust:
+    base = os.environ.get("SMARTPLAY_API_URL", "").rstrip("/")
+    token = os.environ.get("SMARTPLAY_API_TOKEN", "")
+    if not base or not token:
+        raise HTTPException(status_code=500, detail="Customer API not configured")
+    url = f"{base}/api/smart-plays/mobile/{mobile.strip()}"
+    try:
+        async with httpx.AsyncClient(timeout=15) as cli:
+            r = await cli.get(url, headers={"Authorization": f"Bearer {token}"})
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Customer API unreachable: {e}")
+
+    if r.status_code != 200:
         raise HTTPException(status_code=404, detail="Customer not found")
-    return {"mobile": mobile, **cust}
+
+    try:
+        body = r.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail="Invalid customer API response")
+
+    if str(body.get("status")) != "200" or not body.get("results"):
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    res = body["results"]
+    name = f"{(res.get('firstname') or '').strip()} {(res.get('lastname') or '').strip()}".strip() or "Unknown"
+    return {
+        "mobile": str(res.get("mobile") or mobile),
+        "name": name,
+        "email": res.get("email"),
+        "acc_id": res.get("acc_id"),
+        "expiry_date": res.get("expiry_date"),
+        "partner": res.get("partner"),
+        "partner_code": res.get("partner_code"),
+        "package": res.get("package"),
+    }
 
 
 # ---------- WhatsApp (MOCK external API) ----------
@@ -452,6 +477,11 @@ async def create_ticket(payload: TicketCreateIn, user: dict = Depends(get_curren
         "source": payload.source,
         "customer_mobile": payload.customer_mobile if payload.source == "customer" else None,
         "customer_name": payload.customer_name if payload.source == "customer" else None,
+        "customer_email": payload.customer_email if payload.source == "customer" else None,
+        "customer_package": payload.customer_package if payload.source == "customer" else None,
+        "customer_expiry": payload.customer_expiry if payload.source == "customer" else None,
+        "customer_partner": payload.customer_partner if payload.source == "customer" else None,
+        "customer_acc_id": payload.customer_acc_id if payload.source == "customer" else None,
         "issue_type_id": payload.issue_type_id,
         "issue_type_name": issue["name"],
         "title": payload.title,
