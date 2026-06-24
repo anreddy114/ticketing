@@ -398,22 +398,77 @@ async def lookup_customer(mobile: str = Query(..., min_length=4), _: dict = Depe
     }
 
 
-# ---------- WhatsApp (MOCK external API) ----------
+# ---------- WhatsApp (Meta Cloud API) ----------
+def _format_msisdn(mobile: str) -> str:
+    """Strip non-digits; if 10-digit local Indian number, prepend default country code."""
+    digits = "".join(ch for ch in (mobile or "") if ch.isdigit())
+    cc = os.environ.get("WHATSAPP_DEFAULT_COUNTRY_CODE", "91")
+    if len(digits) == 10:
+        digits = f"{cc}{digits}"
+    return digits
+
+
 async def send_whatsapp_message(mobile: str, message: str, ticket_id: str, kind: str):
-    """MOCK WhatsApp send. Replace with real provider call later.
-    Logs to whatsapp_messages collection so it can be audited from the UI.
+    """Send a WhatsApp text message via Meta Cloud API.
+    Falls back to logging-only if WhatsApp env vars are not configured.
+    All attempts are persisted to whatsapp_messages collection.
     """
+    version = os.environ.get("WHATSAPP_GRAPH_VERSION", "v21.0")
+    phone_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
+    token = os.environ.get("WHATSAPP_ACCESS_TOKEN")
+
+    to = _format_msisdn(mobile)
     doc = {
         "id": str(uuid.uuid4()),
         "ticket_id": ticket_id,
-        "mobile": mobile,
+        "mobile": to,
         "message": message,
         "kind": kind,
-        "status": "sent_mock",
+        "status": "pending",
+        "provider": "meta_whatsapp_cloud",
+        "provider_message_id": None,
+        "provider_response": None,
+        "error": None,
         "created_at": now_iso(),
     }
+
+    if not phone_id or not token:
+        doc["status"] = "skipped_not_configured"
+        await db.whatsapp_messages.insert_one(doc)
+        logging.warning("WhatsApp not configured — message not sent.")
+        return doc
+
+    url = f"https://graph.facebook.com/{version}/{phone_id}/messages"
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "text",
+        "text": {"preview_url": False, "body": message},
+    }
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as cli:
+            r = await cli.post(url, json=payload, headers=headers)
+        try:
+            body = r.json()
+        except Exception:
+            body = {"raw": r.text}
+        doc["provider_response"] = body
+        if r.status_code in (200, 201) and isinstance(body, dict) and body.get("messages"):
+            doc["status"] = "sent"
+            doc["provider_message_id"] = body["messages"][0].get("id")
+        else:
+            doc["status"] = "failed"
+            err = body.get("error") if isinstance(body, dict) else None
+            doc["error"] = (err or {}).get("message") if isinstance(err, dict) else f"HTTP {r.status_code}"
+    except httpx.HTTPError as e:
+        doc["status"] = "failed"
+        doc["error"] = f"network: {e}"
+
     await db.whatsapp_messages.insert_one(doc)
-    logging.info(f"[MOCK-WHATSAPP] -> {mobile}: {message}")
+    logging.info(f"[WhatsApp:{doc['status']}] -> {to}: {message[:80]}…")
     return doc
 
 

@@ -289,13 +289,21 @@ export default function TicketDetail() {
                 {whatsapp.map((m) => (
                   <li key={m.id} className="border-l-2 border-[#16A34A] pl-3">
                     <p className="text-xs text-gray-800 whitespace-pre-wrap">{m.message}</p>
-                    <p className="text-[10px] uppercase tracking-wider text-gray-400 mt-1">
-                      {m.kind} · {formatDate(m.created_at)}
-                    </p>
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                      <span className="text-[10px] uppercase tracking-wider text-gray-400">
+                        {m.kind} · {formatDate(m.created_at)}
+                      </span>
+                      <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 border rounded-sm ${
+                        m.status === "sent" ? "text-[#16A34A] border-[#16A34A]" :
+                        m.status === "failed" ? "text-[#FF2400] border-[#FF2400]" :
+                        "text-gray-500 border-gray-300"
+                      }`}>{m.status}</span>
+                    </div>
+                    {m.error && <p className="text-[10px] text-[#FF2400] mt-1">{m.error}</p>}
                   </li>
                 ))}
               </ul>
-              <p className="text-[10px] text-gray-400 italic">MOCKED — wire to real WhatsApp API.</p>
+              <p className="text-[10px] text-gray-400 italic">Powered by Meta WhatsApp Cloud API.</p>
             </div>
           )}
         </div>
