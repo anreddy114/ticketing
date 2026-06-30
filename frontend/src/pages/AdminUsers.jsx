@@ -14,7 +14,7 @@ export default function AdminUsers() {
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ name: "", email: "", password: "", role: "agent" });
-  const [editForm, setEditForm] = useState({ name: "", role: "agent", password: "", active: true });
+  const [editForm, setEditForm] = useState({ name: "", role: "agent", password: "", active: true, seniority: "", photo_url: "" });
 
   const load = () => api.get("/agents").then((r) => setUsers(r.data));
   useEffect(() => { load(); }, []);
@@ -31,14 +31,27 @@ export default function AdminUsers() {
 
   const openEdit = (u) => {
     setEditing(u);
-    setEditForm({ name: u.name, role: u.role, password: "", active: u.active });
+    setEditForm({
+      name: u.name,
+      role: u.role,
+      password: "",
+      active: u.active,
+      seniority: u.seniority || "",
+      photo_url: u.photo_url || "",
+    });
     setEditOpen(true);
   };
 
   const submitEdit = async () => {
     if (!editing) return;
     try {
-      const patch = { name: editForm.name, role: editForm.role, active: editForm.active };
+      const patch = {
+        name: editForm.name,
+        role: editForm.role,
+        active: editForm.active,
+        seniority: editForm.seniority || null,
+        photo_url: editForm.photo_url || null,
+      };
       if (editForm.password) patch.password = editForm.password;
       await api.patch(`/users/${editing.id}`, patch);
       toast.success("Employee updated");
@@ -164,6 +177,19 @@ export default function AdminUsers() {
               </div>
               <div className="space-y-2"><Label>New password (optional)</Label>
                 <Input type="password" placeholder="Leave blank to keep" value={editForm.password} onChange={(e) => setEditForm({ ...editForm, password: e.target.value })} data-testid="user-edit-password-input" /></div>
+              <div className="space-y-2"><Label>Seniority</Label>
+                <Select value={editForm.seniority || "none"} onValueChange={(v) => setEditForm({ ...editForm, seniority: v === "none" ? "" : v })}>
+                  <SelectTrigger data-testid="user-edit-seniority-select"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">— None —</SelectItem>
+                    <SelectItem value="junior">Junior Engineer</SelectItem>
+                    <SelectItem value="mid">Engineer</SelectItem>
+                    <SelectItem value="senior">Senior Engineer</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2"><Label>Photo URL</Label>
+                <Input placeholder="https://…" value={editForm.photo_url} onChange={(e) => setEditForm({ ...editForm, photo_url: e.target.value })} data-testid="user-edit-photo-input" /></div>
               <label className="inline-flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"

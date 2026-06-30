@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import {
   ArrowsLeftRight, ChatCircleText, CheckCircle, ClockClockwise, Phone, WhatsappLogo, ArrowLeft,
 } from "@phosphor-icons/react";
+import StarRating from "@/components/StarRating";
 
 const formatDate = (iso) => {
   if (!iso) return "—";
@@ -38,6 +39,9 @@ export default function TicketDetail() {
   const [transferOpen, setTransferOpen] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
   const [resolution, setResolution] = useState("");
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenReason, setReopenReason] = useState("");
+  const [feedback, setFeedback] = useState(null);
 
   const load = useCallback(async () => {
     const { data } = await api.get(`/tickets/${id}`);
@@ -45,6 +49,10 @@ export default function TicketDetail() {
     setEvents(data.events);
     const wa = await api.get(`/whatsapp/messages`, { params: { ticket_id: id } });
     setWhatsapp(wa.data);
+    try {
+      const fb = await api.get(`/tickets/${id}/feedback`);
+      setFeedback(fb.data);
+    } catch { /* no feedback */ }
   }, [id]);
 
   useEffect(() => {
@@ -205,9 +213,45 @@ export default function TicketDetail() {
               </Dialog>
             )}
             {isClosed && (
-              <Button onClick={() => changeStatus("open")} variant="outline" className="rounded-sm" data-testid="reopen-ticket-button">
-                Reopen
-              </Button>
+              <Dialog open={reopenOpen} onOpenChange={(o) => { setReopenOpen(o); if (!o) setReopenReason(""); }}>
+                <DialogTrigger asChild>
+                  <Button variant="outline" className="rounded-sm" data-testid="reopen-ticket-button">
+                    Reopen
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="rounded-sm">
+                  <DialogHeader>
+                    <DialogTitle className="font-display tracking-tight">Reopen ticket — reason required</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-3">
+                    <p className="text-xs text-gray-500">
+                      Tell us why this ticket needs to be reopened. The original resolution will be preserved in the activity log.
+                    </p>
+                    <Textarea
+                      placeholder="e.g. Customer reported the issue happened again, signal lost after 2 days."
+                      value={reopenReason}
+                      onChange={(e) => setReopenReason(e.target.value)}
+                      rows={4}
+                      data-testid="reopen-reason-input"
+                    />
+                  </div>
+                  <DialogFooter>
+                    <Button variant="outline" className="rounded-sm" onClick={() => setReopenOpen(false)}>Cancel</Button>
+                    <Button
+                      onClick={async () => {
+                        if (!reopenReason.trim()) { toast.error("Reason is required"); return; }
+                        await changeStatus("open", { reopen_reason: reopenReason.trim() });
+                        setReopenOpen(false);
+                        setReopenReason("");
+                      }}
+                      className="bg-[#0047AB] hover:bg-[#0033A0] text-white rounded-sm"
+                      data-testid="reopen-confirm-button"
+                    >
+                      Reopen ticket
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
             )}
           </div>
         </div>
@@ -243,18 +287,26 @@ export default function TicketDetail() {
               })}
             </ul>
             <div className="border-t border-gray-200 p-4 space-y-2">
-              <Textarea
-                placeholder="Add a comment to the activity log…"
-                value={comment}
-                onChange={(e) => setComment(e.target.value)}
-                rows={3}
-                data-testid="comment-input"
-              />
-              <div className="flex justify-end">
-                <Button onClick={submitComment} disabled={!comment.trim()} className="bg-[#0a0a0a] text-white hover:bg-gray-800 rounded-sm" data-testid="comment-submit-button">
-                  <ChatCircleText size={16} weight="bold" className="mr-1" /> Add Comment
-                </Button>
-              </div>
+              {isClosed ? (
+                <p className="text-xs text-gray-500 italic text-center" data-testid="closed-comment-disabled">
+                  Comments are disabled on closed tickets. Reopen the ticket to add a comment.
+                </p>
+              ) : (
+                <>
+                  <Textarea
+                    placeholder="Add a comment to the activity log…"
+                    value={comment}
+                    onChange={(e) => setComment(e.target.value)}
+                    rows={3}
+                    data-testid="comment-input"
+                  />
+                  <div className="flex justify-end">
+                    <Button onClick={submitComment} disabled={!comment.trim()} className="bg-[#0a0a0a] text-white hover:bg-gray-800 rounded-sm" data-testid="comment-submit-button">
+                      <ChatCircleText size={16} weight="bold" className="mr-1" /> Add Comment
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -335,6 +387,15 @@ export default function TicketDetail() {
               </div>
             )}
           </div>
+
+          {feedback && (
+            <div className="border border-gray-200 rounded-sm p-5 space-y-3" data-testid="feedback-panel">
+              <p className="text-xs uppercase tracking-wider text-gray-500 font-bold">Customer Feedback</p>
+              <StarRating value={feedback.rating} readOnly size={20} />
+              {feedback.comment && <p className="text-sm text-gray-800 italic">&ldquo;{feedback.comment}&rdquo;</p>}
+              <p className="text-[10px] text-gray-400 uppercase tracking-wider">Source: {feedback.source} · {new Date(feedback.created_at).toLocaleString()}</p>
+            </div>
+          )}
 
           {ticket.source === "customer" && (
             <div className="border border-gray-200 rounded-sm p-5 space-y-3" data-testid="whatsapp-log">

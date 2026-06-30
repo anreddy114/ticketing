@@ -70,10 +70,14 @@ export default function AppLayout() {
             >
               <Link to="/tickets/new"><Plus size={16} weight="bold" className="mr-1" /> New Ticket</Link>
             </Button>
-            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 border border-gray-200 rounded-sm">
-              <div className="w-7 h-7 rounded-full bg-[#0047AB] text-white flex items-center justify-center text-xs font-bold">
-                {user?.name?.[0]?.toUpperCase()}
-              </div>
+            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 border border-gray-200 rounded-sm cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => navigate("/profile")} data-testid="header-profile-link">
+              {user?.photo_url ? (
+                <img src={user.photo_url} alt={user.name} className="w-7 h-7 rounded-full object-cover" />
+              ) : (
+                <div className="w-7 h-7 rounded-full bg-[#0047AB] text-white flex items-center justify-center text-xs font-bold">
+                  {user?.name?.[0]?.toUpperCase()}
+                </div>
+              )}
               <div className="leading-tight">
                 <p className="text-xs font-semibold" data-testid="header-user-name">{user?.name}</p>
                 <p className="text-[10px] uppercase tracking-wider text-gray-500">{user?.role}</p>

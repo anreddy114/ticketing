@@ -173,8 +173,23 @@ export default function AdminSettings() {
           onCopy={copy}
         />
 
+        <Endpoint
+          label="Submit customer feedback (rating 1-5)"
+          method="POST"
+          url={`${backend}/api/public/feedback`}
+          payload={`{
+  "ticket_number": "TKT-00012",
+  "rating": 5,
+  "comment": "Resolved quickly, great support!",
+  "source": "website",
+  "customer_mobile": "9866334450"
+}`}
+          onCopy={copy}
+        />
+
         <p className="text-[11px] text-gray-500">
-          Auto-assigns to an online agent (round-robin). Falls back to the configured fallback employee if no one is online. Triggers WhatsApp ticket-created template.
+          Auto-assigns to an online agent (agents first, admins as fallback). Triggers WhatsApp ticket-created template.
+          Returns <b>409 duplicate_ticket</b> if an open ticket already exists for the same mobile.
           Set <code>PUBLIC_API_KEY</code> in backend <code>.env</code> to enable.
         </p>
       </section>

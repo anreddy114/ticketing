@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge, PriorityBadge } from "@/components/Badges";
 import { Plus, MagnifyingGlass } from "@phosphor-icons/react";
+import { FeedbackDisplay } from "@/components/StarRating";
 
 export default function Tickets() {
   const { user } = useAuth();
@@ -120,11 +121,12 @@ export default function Tickets() {
               <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Assigned</th>
               <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Status</th>
               <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Priority</th>
+              <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Rating</th>
             </tr>
           </thead>
           <tbody data-testid="tickets-list">
             {tickets.length === 0 && (
-              <tr><td colSpan="7" className="px-4 py-12 text-center text-gray-500 text-sm">No tickets match your filters.</td></tr>
+              <tr><td colSpan="8" className="px-4 py-12 text-center text-gray-500 text-sm">No tickets match your filters.</td></tr>
             )}
             {tickets.map((t) => (
               <tr key={t.id} className="border-b border-gray-100 hover:bg-gray-50">
@@ -148,6 +150,9 @@ export default function Tickets() {
                 <td className="px-4 py-3 text-gray-700">{t.assigned_to_name}</td>
                 <td className="px-4 py-3"><StatusBadge status={t.status} /></td>
                 <td className="px-4 py-3"><PriorityBadge priority={t.priority} /></td>
+                <td className="px-4 py-3">
+                  <FeedbackDisplay rating={t.feedback_rating} comment={t.feedback_comment} source={t.feedback_source} />
+                </td>
               </tr>
             ))}
           </tbody>

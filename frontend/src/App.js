@@ -12,6 +12,7 @@ import AdminIssueTypes from "@/pages/AdminIssueTypes";
 import AdminUsers from "@/pages/AdminUsers";
 import AdminSettings from "@/pages/AdminSettings";
 import AdminSessions from "@/pages/AdminSessions";
+import AgentProfile from "@/pages/AgentProfile";
 import "@/App.css";
 
 const ProtectedRoute = ({ adminOnly = false }) => {
@@ -36,6 +37,8 @@ function App() {
                 <Route path="/tickets/new" element={<CreateTicket />} />
                 <Route path="/tickets/:id" element={<TicketDetail />} />
                 <Route path="/reports" element={<Reports />} />
+                <Route path="/profile" element={<AgentProfile />} />
+                <Route path="/profile/:id" element={<AgentProfile />} />
                 <Route element={<ProtectedRoute adminOnly />}>
                   <Route path="/admin/issue-types" element={<AdminIssueTypes />} />
                   <Route path="/admin/users" element={<AdminUsers />} />

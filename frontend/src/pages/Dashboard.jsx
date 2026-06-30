@@ -33,7 +33,11 @@ export default function Dashboard() {
     setRecent(r.data.slice(0, 8));
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   const goTo = (status) => () => navigate(status ? `/tickets?status=${status}` : "/tickets");
 

@@ -70,6 +70,10 @@ def sanitize_user(u: dict) -> dict:
         "active": u.get("active", True),
         "online": bool(u.get("online", False)),
         "last_seen": u.get("last_seen"),
+        "photo_url": u.get("photo_url"),
+        "seniority": u.get("seniority"),
+        "rating_avg": u.get("rating_avg"),
+        "rating_count": u.get("rating_count", 0),
         "created_at": u.get("created_at"),
     }
 
@@ -120,6 +124,14 @@ class UserUpdate(BaseModel):
     role: Optional[Literal["admin", "agent"]] = None
     active: Optional[bool] = None
     password: Optional[str] = None
+    photo_url: Optional[str] = None
+    seniority: Optional[Literal["junior", "mid", "senior"]] = None
+
+
+class UserSelfUpdate(BaseModel):
+    name: Optional[str] = None
+    password: Optional[str] = None
+    photo_url: Optional[str] = None
 
 
 class IssueTypeIn(BaseModel):
@@ -170,6 +182,16 @@ class TicketStatusIn(BaseModel):
     status: Literal["open", "in_progress", "closed"]
     note: Optional[str] = ""
     resolution: Optional[str] = None  # required when closing
+    reopen_reason: Optional[str] = None  # required when reopening (closed → open/in_progress)
+
+
+class FeedbackIn(BaseModel):
+    ticket_number: Optional[str] = None
+    ticket_id: Optional[str] = None
+    rating: int  # 1..5
+    comment: Optional[str] = ""
+    source: Literal["website", "sip", "whatsapp", "manual", "other"] = "website"
+    customer_mobile: Optional[str] = None
 
 
 class PresenceIn(BaseModel):
@@ -267,7 +289,7 @@ async def shutdown():
 
 # ---------- Auth ----------
 @api.post("/auth/login")
-async def login(payload: LoginIn, response: Response):
+async def login(payload: LoginIn, request: Request, response: Response):
     user = await db.users.find_one({"email": payload.email.lower()})
     if not user or not verify_password(payload.password, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -278,6 +300,10 @@ async def login(payload: LoginIn, response: Response):
         "access_token", token, httponly=True, secure=False, samesite="lax",
         max_age=12 * 3600, path="/",
     )
+    # Capture client metadata
+    fwd = request.headers.get("x-forwarded-for") or ""
+    ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")
+    ua = request.headers.get("user-agent", "")
     # Start agent session
     session_id = str(uuid.uuid4())
     await db.agent_sessions.insert_one({
@@ -287,6 +313,8 @@ async def login(payload: LoginIn, response: Response):
         "login_at": now_iso(),
         "logout_at": None,
         "duration_sec": None,
+        "ip_address": ip,
+        "user_agent": ua,
     })
     await db.users.update_one(
         {"id": user["id"]},
@@ -775,21 +803,36 @@ async def change_status(ticket_id: str, payload: TicketStatusIn, user: dict = De
         raise HTTPException(status_code=400, detail="Ticket already in this status")
     if payload.status == "closed" and not (payload.resolution or "").strip():
         raise HTTPException(status_code=400, detail="Resolution message is required to close a ticket")
+    # Reopening from closed requires a reason
+    is_reopen = t["status"] == "closed" and payload.status in ("open", "in_progress")
+    if is_reopen and not (payload.reopen_reason or "").strip():
+        raise HTTPException(status_code=400, detail="Reopen reason is required when reopening a closed ticket")
+
     update = {"status": payload.status, "updated_at": now_iso()}
     if payload.status == "closed":
         update["closed_at"] = now_iso()
         update["resolution"] = payload.resolution.strip()
         update["closed_by"] = user["id"]
         update["closed_by_name"] = user["name"]
+    if is_reopen:
+        update["closed_at"] = None
     await db.tickets.update_one({"id": ticket_id}, {"$set": update})
+
     msg = f"Status changed from {t['status']} to {payload.status}"
     if payload.status == "closed":
         msg += f". Resolution: {payload.resolution.strip()}"
+    if is_reopen:
+        msg = f"Ticket reopened. Reason: {payload.reopen_reason.strip()}"
     if payload.note:
         msg += f". Note: {payload.note}"
+    event_type = "reopened" if is_reopen else "status_change"
     await log_event(
-        ticket_id, user, "status_change", msg,
-        meta={"from": t["status"], "to": payload.status, "resolution": payload.resolution if payload.status == "closed" else None},
+        ticket_id, user, event_type, msg,
+        meta={
+            "from": t["status"], "to": payload.status,
+            "resolution": payload.resolution if payload.status == "closed" else None,
+            "reopen_reason": payload.reopen_reason if is_reopen else None,
+        },
     )
 
     # Send WhatsApp on close
@@ -991,8 +1034,11 @@ async def _is_user_online(u: dict) -> bool:
     return _seconds_since(u.get("last_seen")) < HEARTBEAT_TIMEOUT_SEC
 
 
-async def _online_agents(exclude_id: Optional[str] = None) -> List[dict]:
-    users = await db.users.find({"active": True}, {"_id": 0, "password_hash": 0}).to_list(1000)
+async def _online_agents(exclude_id: Optional[str] = None, role: Optional[str] = None) -> List[dict]:
+    q: dict = {"active": True}
+    if role:
+        q["role"] = role
+    users = await db.users.find(q, {"_id": 0, "password_hash": 0}).to_list(1000)
     out = []
     for u in users:
         if exclude_id and u["id"] == exclude_id:
@@ -1003,14 +1049,17 @@ async def _online_agents(exclude_id: Optional[str] = None) -> List[dict]:
 
 
 async def _round_robin_pick(exclude_id: Optional[str] = None) -> Optional[dict]:
-    agents = await _online_agents(exclude_id=exclude_id)
-    if not agents:
+    """Prefer online agents; fall back to online admins only if no agent is online."""
+    pool = await _online_agents(exclude_id=exclude_id, role="agent")
+    if not pool:
+        pool = await _online_agents(exclude_id=exclude_id, role="admin")
+    if not pool:
         return None
     counter = await db.counters.find_one_and_update(
         {"_id": "rr"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True,
     )
-    idx = (counter["seq"] - 1) % len(agents)
-    return agents[idx]
+    idx = (counter["seq"] - 1) % len(pool)
+    return pool[idx]
 
 
 async def _get_settings() -> dict:
@@ -1230,6 +1279,20 @@ async def public_create_ticket(payload: PublicTicketIn, request: Request):
     """Public endpoint your website calls to create a ticket on behalf of a customer."""
     _require_public_key(request)
 
+    # Duplicate prevention
+    existing = await _existing_open_ticket(payload.customer_mobile)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "duplicate_ticket",
+                "message": f"An open ticket {existing['ticket_number']} already exists for this customer.",
+                "ticket_number": existing["ticket_number"],
+                "ticket_id": existing["id"],
+                "status": existing["status"],
+            },
+        )
+
     # Resolve issue type
     issue = None
     if payload.issue_type_id:
@@ -1310,6 +1373,241 @@ async def public_issue_types(request: Request):
 
 
 # ====================================================================
+# Customer feedback / ratings
+# ====================================================================
+
+async def _recompute_agent_rating(user_id: str):
+    """Recompute the agent's average rating from feedback on their closed tickets."""
+    pipe = [
+        {"$match": {"agent_id": user_id}},
+        {"$group": {"_id": None, "avg": {"$avg": "$rating"}, "count": {"$sum": 1}}},
+    ]
+    agg = await db.feedback.aggregate(pipe).to_list(1)
+    avg = round(agg[0]["avg"], 2) if agg else None
+    count = agg[0]["count"] if agg else 0
+    await db.users.update_one({"id": user_id}, {"$set": {"rating_avg": avg, "rating_count": count}})
+
+
+async def _submit_feedback(payload: FeedbackIn) -> dict:
+    if not (1 <= payload.rating <= 5):
+        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
+    ticket = None
+    if payload.ticket_id:
+        ticket = await db.tickets.find_one({"id": payload.ticket_id})
+    elif payload.ticket_number:
+        ticket = await db.tickets.find_one({"ticket_number": payload.ticket_number})
+    elif payload.customer_mobile:
+        # most recent closed ticket for that mobile
+        ticket = await db.tickets.find_one(
+            {"customer_mobile": payload.customer_mobile, "status": "closed"},
+            sort=[("closed_at", -1)],
+        )
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    # Upsert feedback (one per ticket)
+    existing = await db.feedback.find_one({"ticket_id": ticket["id"]})
+    doc = {
+        "id": existing["id"] if existing else str(uuid.uuid4()),
+        "ticket_id": ticket["id"],
+        "ticket_number": ticket["ticket_number"],
+        "agent_id": ticket.get("assigned_to") or ticket.get("closed_by"),
+        "agent_name": ticket.get("assigned_to_name") or ticket.get("closed_by_name"),
+        "rating": int(payload.rating),
+        "comment": (payload.comment or "").strip(),
+        "source": payload.source,
+        "customer_mobile": payload.customer_mobile or ticket.get("customer_mobile"),
+        "created_at": existing["created_at"] if existing else now_iso(),
+        "updated_at": now_iso(),
+    }
+    if existing:
+        await db.feedback.update_one({"id": existing["id"]}, {"$set": doc})
+    else:
+        await db.feedback.insert_one(doc)
+    # Stamp rating onto the ticket too (for fast listing)
+    await db.tickets.update_one(
+        {"id": ticket["id"]},
+        {"$set": {
+            "feedback_rating": doc["rating"],
+            "feedback_comment": doc["comment"],
+            "feedback_source": doc["source"],
+            "feedback_at": doc["updated_at"],
+        }},
+    )
+    # Refresh agent rating
+    if doc["agent_id"]:
+        await _recompute_agent_rating(doc["agent_id"])
+    doc.pop("_id", None)
+    return doc
+
+
+@api.post("/public/feedback")
+async def public_submit_feedback(payload: FeedbackIn, request: Request):
+    """Public — submit feedback from any external source (website, IVR, agent)."""
+    _require_public_key(request)
+    return await _submit_feedback(payload)
+
+
+@api.post("/tickets/{ticket_id}/feedback")
+async def internal_submit_feedback(ticket_id: str, payload: FeedbackIn, _: dict = Depends(get_current_user)):
+    """Internal — allow agents/admin to record feedback received via phone."""
+    payload.ticket_id = ticket_id
+    return await _submit_feedback(payload)
+
+
+@api.get("/tickets/{ticket_id}/feedback")
+async def get_ticket_feedback(ticket_id: str, _: dict = Depends(get_current_user)):
+    fb = await db.feedback.find_one({"ticket_id": ticket_id}, {"_id": 0})
+    if not fb:
+        return None
+    return fb
+
+
+# ====================================================================
+# Agent self-profile
+# ====================================================================
+
+@api.patch("/users/me")
+async def update_self(payload: UserSelfUpdate, user: dict = Depends(get_current_user)):
+    update = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
+    if "password" in update:
+        update["password_hash"] = hash_password(update.pop("password"))
+    if not update:
+        raise HTTPException(status_code=400, detail="No changes")
+    await db.users.update_one({"id": user["id"]}, {"$set": update})
+    u = await db.users.find_one({"id": user["id"]})
+    return sanitize_user(u)
+
+
+@api.get("/users/{user_id}/profile")
+async def get_user_profile(user_id: str, _: dict = Depends(get_current_user)):
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Latest 10 feedback entries
+    fbs = await db.feedback.find({"agent_id": user_id}, {"_id": 0}).sort("created_at", -1).to_list(10)
+    return {"user": sanitize_user(u), "recent_feedback": fbs}
+
+
+# ====================================================================
+# Session reports (Excel — daily / weekly / monthly)
+# ====================================================================
+
+@api.get("/reports/sessions.xlsx")
+async def export_sessions_xlsx(
+    period: Literal["daily", "weekly", "monthly", "all"] = "daily",
+    user_id: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    """Excel report of agent login sessions aggregated by period."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from io import BytesIO
+    from fastapi.responses import StreamingResponse
+
+    q: dict = {}
+    if user.get("role") != "admin":
+        q["user_id"] = user["id"]
+    elif user_id:
+        q["user_id"] = user_id
+
+    # Date filter
+    now_t = datetime.now(timezone.utc)
+    if period == "daily":
+        since = now_t - timedelta(days=1)
+    elif period == "weekly":
+        since = now_t - timedelta(days=7)
+    elif period == "monthly":
+        since = now_t - timedelta(days=30)
+    else:
+        since = None
+    if since:
+        q["login_at"] = {"$gte": since.isoformat()}
+
+    sessions = await db.agent_sessions.find(q, {"_id": 0}).sort("login_at", -1).to_list(10000)
+
+    # Compute duration for active sessions
+    for s in sessions:
+        if not s.get("duration_sec"):
+            try:
+                t0 = datetime.fromisoformat(s["login_at"].replace("Z", "+00:00"))
+                logout = s.get("logout_at")
+                t1 = datetime.fromisoformat(logout.replace("Z", "+00:00")) if logout else now_t
+                s["duration_sec"] = int((t1 - t0).total_seconds())
+            except Exception:
+                s["duration_sec"] = 0
+
+    wb = Workbook()
+
+    # Sheet 1 — raw sessions
+    ws = wb.active
+    ws.title = "Sessions"
+    headers = ["Employee", "Login at", "Logout at", "Duration (s)", "Duration (h:m)", "IP Address", "User Agent"]
+    ws.append(headers)
+    hdr_fill = PatternFill(start_color="0A0A0A", end_color="0A0A0A", fill_type="solid")
+    hdr_font = Font(bold=True, color="FFFFFF")
+    for col, _ in enumerate(headers, start=1):
+        c = ws.cell(row=1, column=col)
+        c.fill = hdr_fill
+        c.font = hdr_font
+
+    def _hm(sec):
+        h = sec // 3600
+        m = (sec % 3600) // 60
+        return f"{h}h {m}m"
+
+    for s in sessions:
+        ws.append([
+            s.get("user_name") or "",
+            s.get("login_at") or "",
+            s.get("logout_at") or "",
+            s.get("duration_sec", 0),
+            _hm(s.get("duration_sec", 0)),
+            s.get("ip_address") or "",
+            s.get("user_agent") or "",
+        ])
+
+    # Sheet 2 — per-agent totals
+    ws2 = wb.create_sheet("Totals by Employee")
+    ws2.append(["Employee", "Sessions", "Total seconds", "Total time"])
+    for col in range(1, 5):
+        c = ws2.cell(row=1, column=col)
+        c.fill = hdr_fill
+        c.font = hdr_font
+
+    totals: dict = {}
+    for s in sessions:
+        key = s.get("user_name") or "Unknown"
+        if key not in totals:
+            totals[key] = {"count": 0, "sec": 0}
+        totals[key]["count"] += 1
+        totals[key]["sec"] += s.get("duration_sec") or 0
+    for name, agg in sorted(totals.items(), key=lambda x: -x[1]["sec"]):
+        ws2.append([name, agg["count"], agg["sec"], _hm(agg["sec"])])
+
+    # autosize
+    for sheet in (ws, ws2):
+        for col_idx in range(1, sheet.max_column + 1):
+            max_len = 8
+            for row in sheet.iter_rows(min_col=col_idx, max_col=col_idx):
+                for cell in row:
+                    v = "" if cell.value is None else str(cell.value)
+                    if len(v) > max_len:
+                        max_len = len(v)
+            sheet.column_dimensions[sheet.cell(row=1, column=col_idx).column_letter].width = min(max_len + 2, 60)
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = f"sessions_{period}_{now_t.strftime('%Y%m%d')}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+# ====================================================================
 # System Settings (admin)
 # ====================================================================
 
@@ -1379,6 +1677,16 @@ async def _smartplay_lookup_silent(mobile: str) -> Optional[dict]:
         return None
 
 
+async def _existing_open_ticket(mobile: str) -> Optional[dict]:
+    """Return any open / in_progress ticket for this customer mobile, else None."""
+    if not mobile:
+        return None
+    return await db.tickets.find_one(
+        {"customer_mobile": mobile.strip(), "status": {"$in": ["open", "in_progress"]}},
+        {"_id": 0},
+    )
+
+
 @api.post("/sip/incoming-call")
 async def sip_incoming_call(payload: SipIncomingCallIn, request: Request):
     """Webhook for Asterisk dialplan/AGI.
@@ -1389,6 +1697,20 @@ async def sip_incoming_call(payload: SipIncomingCallIn, request: Request):
     Headers: `X-Sip-Secret: <SIP_WEBHOOK_SECRET>` (set in backend .env)
     """
     _require_sip_secret(request)
+
+    # Duplicate prevention — don't create a new ticket if one is still open for this mobile
+    existing = await _existing_open_ticket(payload.caller_mobile)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "duplicate_ticket",
+                "message": f"An open ticket {existing['ticket_number']} already exists for this customer.",
+                "ticket_number": existing["ticket_number"],
+                "ticket_id": existing["id"],
+                "status": existing["status"],
+            },
+        )
 
     # Try to enrich with SmartPlay customer data
     customer = await _smartplay_lookup_silent(payload.caller_mobile)
