@@ -24,25 +24,24 @@ Create a simple ticketing system: employees can create self-tickets; for custome
 7. Issue types selectable (pre-seeded, editable by admin).
 8. Reports: totals + breakdown by type / assignee / priority.
 
-## What's Been Implemented (2026-02-20)
-- JWT auth (admin-seeded), Admin + Agent roles, employee CRUD.
-- Issue type CRUD (admin only) with 5 pre-seeded defaults.
-- Ticket lifecycle: create (customer/self) → in_progress → closed → reopen.
-- Customer lookup (MOCK, 5 demo numbers).
-- WhatsApp send on ticket created + closed (MOCK, persisted & viewable in UI).
-- Transfer with audit history; comments persisted as events.
-- Reports summary endpoint + UI page.
-- Beautiful "Control Room" Swiss/high-contrast UI (Chivo + IBM Plex Sans) with phosphor icons.
-- Backend testing: 18/18 endpoints passed.
+## What's Been Implemented
+- 2026-02-20: JWT auth, Admin + Agent roles, employee CRUD, issue types CRUD.
+- Ticket lifecycle: create (customer/self) → in_progress → closed → reopen (with mandatory reason).
+- SmartPlay live customer-lookup API.
+- Meta WhatsApp Cloud API (templates + free-text 24h window) — sends on create & close.
+- SIP/IVR webhooks (Asterisk) and Public website API (create ticket + feedback) with header-secret validation.
+- Agent presence (Online/Offline) with heartbeat, round-robin auto-assignment preferring online agents, manual-transfer mode.
+- Team performance leaderboards, agent profile, admin sessions view, Excel exports.
+- 1-click customer rating system + `/rate/:token` public page.
+- 2026-06-30: Online-time tracking — `presence_sessions` collection records each online window; live elapsed timer in `PresenceToggle` header chip; on next login, a toast + banner show the previous online-session duration. **Verified working via screenshot test.**
 
 ## Prioritized Backlog
-- **P1**: Wire real customer DB API (replace `MOCK_CUSTOMERS`).
-- **P1**: Wire real WhatsApp provider in `send_whatsapp_message()`.
-- **P2**: Pagination & date-range filters on tickets/reports.
-- **P2**: CSV export of reports.
-- **P2**: SLA timers / breach indicators.
-- **P3**: Customer-facing portal for status check via mobile + ticket #.
-- **P3**: Forgot/reset password flow (currently admin-managed only).
+- **P1**: OpenAI Chat Models integration — pending user choice of use-case (auto-reply / summarize / auto-categorize / chatbot).
+- **P2**: Wire `support_ticket_feedback_request` WhatsApp template once Meta approves it (currently falls back to free-text).
+- **P2**: Refactor `/app/backend/server.py` (~1900 lines) into modular routers (`routers/tickets.py`, `routers/users.py`, `routers/webhooks.py`) — only if further backend expansion is planned.
+- **P3**: SLA timers / breach indicators.
+- **P3**: Forgot/reset password flow.
 
 ## Next Tasks
-- Once you share real customer DB and WhatsApp API specs, swap the two mock functions in `/app/backend/server.py` (`lookup_customer` and `send_whatsapp_message`).
+- Ask user which OpenAI use-case to wire (or skip).
+- Once Meta approves `support_ticket_feedback_request`, set the template name in `backend/.env` and verify outside-24h delivery.
