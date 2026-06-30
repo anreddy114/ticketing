@@ -1348,7 +1348,35 @@ async def agents_online_time(user: dict = Depends(get_current_user)):
                     today += int((now_t - today_start).total_seconds())
             except Exception:
                 pass
-    return {"total_sec": total, "today_sec": today, "current_session": current}
+    return {
+        "total_sec": total,
+        "today_sec": today,
+        "current_session": current,
+        "sessions_count": len(sessions),
+    }
+
+
+@api.get("/agents/presence-sessions")
+async def agents_presence_sessions(
+    limit: int = 50,
+    user: dict = Depends(get_current_user),
+):
+    """Returns the current user's own presence (online) sessions, most recent first."""
+    rows = await db.presence_sessions.find(
+        {"user_id": user["id"]}, {"_id": 0}
+    ).sort("online_from", -1).to_list(limit)
+    now_t = datetime.now(timezone.utc)
+    for r in rows:
+        if not r.get("online_until"):
+            try:
+                t0 = datetime.fromisoformat(r["online_from"].replace("Z", "+00:00"))
+                r["duration_sec"] = int((now_t - t0).total_seconds())
+                r["active"] = True
+            except Exception:
+                r["active"] = True
+        else:
+            r["active"] = False
+    return rows
 
 
 # ====================================================================

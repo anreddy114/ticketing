@@ -6,9 +6,32 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Star, FloppyDisk, ArrowLeft } from "@phosphor-icons/react";
+import { Star, FloppyDisk, ArrowLeft, Timer, SignIn } from "@phosphor-icons/react";
 
 const SENIORITY_LABEL = { junior: "Junior Engineer", mid: "Engineer", senior: "Senior Engineer" };
+
+const fmtSec = (s) => {
+  if (s == null) return "—";
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${sec}s`;
+  return `${sec}s`;
+};
+const fmtDt = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
+const shortUA = (ua) => {
+  if (!ua) return "—";
+  const m = ua.match(/(Chrome|Firefox|Safari|Edge|Opera|MSIE)[/ ]([\d.]+)/);
+  const browser = m ? `${m[1]} ${m[2].split(".")[0]}` : "Other";
+  let os = "Unknown OS";
+  if (/Windows/.test(ua)) os = "Windows";
+  else if (/Mac OS X/.test(ua)) os = "macOS";
+  else if (/Android/.test(ua)) os = "Android";
+  else if (/iPhone|iPad/.test(ua)) os = "iOS";
+  else if (/Linux/.test(ua)) os = "Linux";
+  return `${browser} · ${os}`;
+};
 
 function Stars({ value, size = 14 }) {
   if (value == null) return <span className="text-xs text-gray-400">No ratings yet</span>;
@@ -34,6 +57,9 @@ export default function AgentProfile() {
   const [data, setData] = useState(null);
   const [form, setForm] = useState({ name: "", photo_url: "", password: "" });
   const [busy, setBusy] = useState(false);
+  const [timeStats, setTimeStats] = useState(null);
+  const [presenceSessions, setPresenceSessions] = useState([]);
+  const [loginSessions, setLoginSessions] = useState([]);
 
   const targetId = id || user?.id;
   const isOwnProfile = targetId === user?.id;
@@ -45,7 +71,29 @@ export default function AgentProfile() {
     setForm({ name: data.user.name, photo_url: data.user.photo_url || "", password: "" });
   }, [targetId]);
 
+  const loadMyTime = useCallback(async () => {
+    if (!isOwnProfile) return;
+    try {
+      const [t, ps, ls] = await Promise.all([
+        api.get("/agents/online-time"),
+        api.get("/agents/presence-sessions", { params: { limit: 20 } }),
+        api.get("/agents/sessions"),
+      ]);
+      setTimeStats(t.data);
+      setPresenceSessions(ps.data);
+      setLoginSessions(ls.data);
+    } catch {
+      /* non-fatal */
+    }
+  }, [isOwnProfile]);
+
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    loadMyTime();
+    if (!isOwnProfile) return;
+    const t = setInterval(loadMyTime, 30_000);
+    return () => clearInterval(t);
+  }, [loadMyTime, isOwnProfile]);
 
   const saveSelf = async () => {
     setBusy(true);
@@ -138,6 +186,117 @@ export default function AgentProfile() {
             </Button>
           </div>
         </div>
+      )}
+
+      {isOwnProfile && (
+        <section className="space-y-4" data-testid="my-time-sessions">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="border border-gray-200 rounded-sm p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Timer size={14} weight="bold" className="text-[#16A34A]" />
+                <p className="text-[11px] uppercase tracking-wider text-gray-500 font-bold">Today online</p>
+              </div>
+              <p className="font-display text-3xl font-black tracking-tight" data-testid="my-today-online">{fmtSec(timeStats?.today_sec)}</p>
+            </div>
+            <div className="border border-gray-200 rounded-sm p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Timer size={14} weight="bold" className="text-[#0047AB]" />
+                <p className="text-[11px] uppercase tracking-wider text-gray-500 font-bold">Total online</p>
+              </div>
+              <p className="font-display text-3xl font-black tracking-tight" data-testid="my-total-online">{fmtSec(timeStats?.total_sec)}</p>
+            </div>
+            <div className="border border-gray-200 rounded-sm p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Timer size={14} weight="bold" className="text-gray-500" />
+                <p className="text-[11px] uppercase tracking-wider text-gray-500 font-bold">Online sessions</p>
+              </div>
+              <p className="font-display text-3xl font-black tracking-tight" data-testid="my-online-sessions-count">{timeStats?.sessions_count ?? 0}</p>
+            </div>
+            <div className="border border-gray-200 rounded-sm p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <SignIn size={14} weight="bold" className="text-gray-500" />
+                <p className="text-[11px] uppercase tracking-wider text-gray-500 font-bold">Login sessions</p>
+              </div>
+              <p className="font-display text-3xl font-black tracking-tight" data-testid="my-login-sessions-count">{loginSessions.length}</p>
+            </div>
+          </div>
+
+          <div className="border border-gray-200 rounded-sm overflow-hidden">
+            <div className="px-5 py-3 border-b border-gray-200 bg-gray-50/60">
+              <h2 className="font-display font-bold tracking-tight">My online sessions</h2>
+              <p className="text-[11px] text-gray-500">Time spent in Online state. Auto-refreshes every 30s.</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 bg-white">
+                    <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">From</th>
+                    <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Until</th>
+                    <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Duration</th>
+                    <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">State</th>
+                  </tr>
+                </thead>
+                <tbody data-testid="my-presence-rows">
+                  {presenceSessions.length === 0 && (
+                    <tr><td colSpan="4" className="px-4 py-8 text-center text-gray-500 text-sm">You haven&apos;t gone online yet.</td></tr>
+                  )}
+                  {presenceSessions.map((s, i) => (
+                    <tr key={i} className="border-b border-gray-100 hover:bg-gray-50">
+                      <td className="px-4 py-3 text-gray-700">{fmtDt(s.online_from)}</td>
+                      <td className="px-4 py-3 text-gray-700">{fmtDt(s.online_until)}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{fmtSec(s.duration_sec)}</td>
+                      <td className="px-4 py-3">
+                        <span className={`text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded-sm ${s.active ? "text-[#16A34A] border-[#16A34A] bg-green-50" : "text-gray-500 border-gray-300"}`}>
+                          {s.active ? "Active" : "Closed"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="border border-gray-200 rounded-sm overflow-hidden">
+            <div className="px-5 py-3 border-b border-gray-200 bg-gray-50/60">
+              <h2 className="font-display font-bold tracking-tight">My login sessions</h2>
+              <p className="text-[11px] text-gray-500">Platform login audit — IP, browser &amp; duration.</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 bg-white">
+                    <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Login at</th>
+                    <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Logout at</th>
+                    <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Duration</th>
+                    <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">IP</th>
+                    <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Browser · OS</th>
+                    <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">State</th>
+                  </tr>
+                </thead>
+                <tbody data-testid="my-login-rows">
+                  {loginSessions.length === 0 && (
+                    <tr><td colSpan="6" className="px-4 py-8 text-center text-gray-500 text-sm">No login sessions yet.</td></tr>
+                  )}
+                  {loginSessions.slice(0, 20).map((s) => (
+                    <tr key={s.id} className="border-b border-gray-100 hover:bg-gray-50">
+                      <td className="px-4 py-3 text-gray-700">{fmtDt(s.login_at)}</td>
+                      <td className="px-4 py-3 text-gray-700">{fmtDt(s.logout_at)}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{fmtSec(s.duration_sec)}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{s.ip_address || "—"}</td>
+                      <td className="px-4 py-3 text-xs text-gray-600" title={s.user_agent}>{shortUA(s.user_agent)}</td>
+                      <td className="px-4 py-3">
+                        <span className={`text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded-sm ${s.active ? "text-[#16A34A] border-[#16A34A] bg-green-50" : "text-gray-500 border-gray-300"}`}>
+                          {s.active ? "Active" : "Closed"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
       )}
 
       <div className="border border-gray-200 rounded-sm">

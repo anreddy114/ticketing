@@ -34,7 +34,8 @@ Create a simple ticketing system: employees can create self-tickets; for custome
 - Team performance leaderboards, agent profile, admin sessions view, Excel exports.
 - 1-click customer rating system + `/rate/:token` public page.
 - 2026-06-30: Online-time tracking — `presence_sessions` records each online window. Live elapsed timer removed from header (per user); replaced by an **Online Time Summary** table on `/admin/sessions` (admin-only) — shows per-employee sessions count, today online, total online, last online, current state. New endpoint `GET /api/admin/presence-summary`.
-- 2026-06-30: **Today's Top Performers** leaderboard widget added to the Dashboard — ranks agents by closed-today + rating + online minutes. New endpoint `GET /api/reports/today-leaderboard`. Verified via screenshot.
+- 2026-06-30: **Today's Top Performers** leaderboard widget added to the Dashboard (visible to admins AND agents) — ranks agents by closed-today + rating + online minutes. New endpoint `GET /api/reports/today-leaderboard`.
+- 2026-06-30: **My Time & Sessions** added to agent's own profile page — 4 stat cards (today online, total online, online sessions count, login sessions count) + table of own presence (online) sessions + table of own login sessions. New endpoint `GET /api/agents/presence-sessions`; `GET /api/agents/online-time` now also returns `sessions_count`. Verified via screenshot.
 
 ## Prioritized Backlog
 - **P1**: OpenAI Chat Models integration — pending user choice of use-case (auto-reply / summarize / auto-categorize / chatbot).
