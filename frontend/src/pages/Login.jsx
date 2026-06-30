@@ -9,7 +9,7 @@ import { Ticket as TicketIcon, SignIn } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 export default function Login() {
-  const { user, login } = useAuth();
+  const { user, login, lastLogout, setLastLogout } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -21,8 +21,17 @@ export default function Login() {
     e.preventDefault();
     setBusy(true);
     try {
-      await login(email.trim().toLowerCase(), password);
-      toast.success("Welcome back");
+      const res = await login(email.trim().toLowerCase(), password);
+      if (res.previous_session?.duration_sec) {
+        const sec = res.previous_session.duration_sec;
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        const txt = h > 0 ? `${h}h ${m}m` : `${m}m`;
+        toast.success("Welcome back", { description: `Your last session lasted ${txt}` });
+      } else {
+        toast.success("Welcome back");
+      }
+      setLastLogout && setLastLogout(null);
       navigate("/", { replace: true });
     } catch (err) {
       toast.error(errorMessage(err, "Login failed"));
@@ -68,6 +77,20 @@ export default function Login() {
             <h1 className="font-display text-3xl sm:text-4xl font-black tracking-tight">Welcome back.</h1>
             <p className="text-sm text-gray-500">Use your employee credentials to continue.</p>
           </div>
+
+          {lastLogout?.duration_text && (
+            <div className="border border-[#16A34A] bg-green-50 rounded-sm p-3 text-xs space-y-1" data-testid="logout-summary-banner">
+              <p className="font-bold uppercase tracking-wider text-[#16A34A]">Signed out</p>
+              <p className="text-gray-700">
+                You were logged in for <b>{lastLogout.duration_text}</b>.
+              </p>
+              {lastLogout.login_at && (
+                <p className="text-[10px] text-gray-500">
+                  {new Date(lastLogout.login_at).toLocaleString()} → {new Date(lastLogout.logout_at).toLocaleString()}
+                </p>
+              )}
+            </div>
+          )}
 
           <div className="space-y-4">
             <div className="space-y-2">

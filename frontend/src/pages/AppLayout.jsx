@@ -3,6 +3,7 @@ import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import PresenceToggle from "@/components/PresenceToggle";
 import NotificationBell from "@/components/NotificationBell";
+import { toast } from "sonner";
 import {
   House, Ticket as TicketIcon, ChartBar, Tag, UsersThree, SignOut, Plus, GearSix, ClockCounterClockwise,
 } from "@phosphor-icons/react";
@@ -19,7 +20,12 @@ export default function AppLayout() {
   const navigate = useNavigate();
 
   const handleLogout = async () => {
-    await logout();
+    const info = await logout();
+    if (info?.duration_text) {
+      toast.success("Logged out", { description: `You were logged in for ${info.duration_text}` });
+    } else {
+      toast.message("Logged out");
+    }
     navigate("/login", { replace: true });
   };
 

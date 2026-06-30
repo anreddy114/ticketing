@@ -295,6 +295,19 @@ async def login(payload: LoginIn, request: Request, response: Response):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.get("active", True):
         raise HTTPException(status_code=403, detail="Account is inactive")
+    # Fetch previous session info to show on welcome
+    prev = await db.agent_sessions.find_one(
+        {"user_id": user["id"], "logout_at": {"$ne": None}},
+        sort=[("logout_at", -1)],
+    )
+    previous_session = None
+    if prev:
+        previous_session = {
+            "login_at": prev.get("login_at"),
+            "logout_at": prev.get("logout_at"),
+            "duration_sec": prev.get("duration_sec"),
+        }
+
     token = create_access_token(user["id"], user["email"], user["role"])
     response.set_cookie(
         "access_token", token, httponly=True, secure=False, samesite="lax",
@@ -320,29 +333,44 @@ async def login(payload: LoginIn, request: Request, response: Response):
         {"id": user["id"]},
         {"$set": {"current_session_id": session_id, "last_login_at": now_iso()}},
     )
-    return {"token": token, "user": sanitize_user(user)}
+    return {
+        "token": token,
+        "user": sanitize_user(user),
+        "previous_session": previous_session,
+    }
 
 
 @api.post("/auth/logout")
 async def logout(response: Response, user: dict = Depends(get_current_user)):
     response.delete_cookie("access_token", path="/")
     # End agent session
+    duration_sec = None
+    login_at = None
+    logout_at = None
     sid = user.get("current_session_id")
     if sid:
         sess = await db.agent_sessions.find_one({"id": sid})
         if sess and not sess.get("logout_at"):
             t0 = datetime.fromisoformat(sess["login_at"].replace("Z", "+00:00"))
             t1 = datetime.now(timezone.utc)
+            duration_sec = int((t1 - t0).total_seconds())
+            login_at = sess["login_at"]
+            logout_at = t1.isoformat()
             await db.agent_sessions.update_one(
                 {"id": sid},
-                {"$set": {"logout_at": t1.isoformat(), "duration_sec": int((t1 - t0).total_seconds())}},
+                {"$set": {"logout_at": logout_at, "duration_sec": duration_sec}},
             )
     # Mark offline (but do NOT redistribute — they may log back in shortly)
     await db.users.update_one(
         {"id": user["id"]},
         {"$set": {"online": False, "current_session_id": None}},
     )
-    return {"ok": True}
+    return {
+        "ok": True,
+        "session_duration_sec": duration_sec,
+        "login_at": login_at,
+        "logout_at": logout_at,
+    }
 
 
 @api.get("/auth/me")
