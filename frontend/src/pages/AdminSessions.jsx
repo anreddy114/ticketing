@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { api, API, getToken } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { FileXls } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -19,7 +21,7 @@ const fmtDt = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
 
 const shortUA = (ua) => {
   if (!ua) return "—";
-  const m = ua.match(/(Chrome|Firefox|Safari|Edge|Opera|MSIE)[\\/ ]([\d.]+)/);
+  const m = ua.match(/(Chrome|Firefox|Safari|Edge|Opera|MSIE)[/ ]([\d.]+)/);
   const browser = m ? `${m[1]} ${m[2].split(".")[0]}` : "Other";
   let os = "Unknown OS";
   if (/Windows/.test(ua)) os = "Windows";
@@ -35,6 +37,11 @@ export default function AdminSessions() {
   const [users, setUsers] = useState([]);
   const [filter, setFilter] = useState("all");
 
+  const [period, setPeriod] = useState("daily");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [generating, setGenerating] = useState(false);
+
   const load = () => {
     const params = {};
     if (filter !== "all") params.user_id = filter;
@@ -44,14 +51,26 @@ export default function AdminSessions() {
   useEffect(() => { api.get("/users").then((r) => setUsers(r.data)); }, []);
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [filter]);
 
-  const downloadExcel = async (period) => {
+  const generate = async () => {
+    if (period === "custom" && !customFrom && !customTo) {
+      toast.error("Pick a start or end date for the custom range");
+      return;
+    }
+    setGenerating(true);
     try {
       const params = new URLSearchParams({ period });
       if (filter !== "all") params.set("user_id", filter);
+      if (period === "custom") {
+        if (customFrom) params.set("date_from", new Date(customFrom).toISOString());
+        if (customTo) params.set("date_to", new Date(`${customTo}T23:59:59`).toISOString());
+      }
       const res = await fetch(`${API}/reports/sessions.xlsx?${params}`, {
         headers: { Authorization: `Bearer ${getToken()}` },
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error(t || `HTTP ${res.status}`);
+      }
       const blob = await res.blob();
       const a = document.createElement("a");
       const dl = URL.createObjectURL(blob);
@@ -64,6 +83,8 @@ export default function AdminSessions() {
       toast.success(`Downloaded ${period} report`);
     } catch (e) {
       toast.error(e.message || "Download failed");
+    } finally {
+      setGenerating(false);
     }
   };
 
@@ -78,27 +99,59 @@ export default function AdminSessions() {
           <h1 className="font-display text-3xl sm:text-4xl font-black tracking-tight">Login Sessions</h1>
           <p className="text-sm text-gray-500 mt-1">Login/logout audit with IP, browser &amp; duration.</p>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="w-56">
-            <Select value={filter} onValueChange={setFilter}>
-              <SelectTrigger data-testid="sessions-user-filter"><SelectValue /></SelectTrigger>
+        <div className="w-56">
+          <Select value={filter} onValueChange={setFilter}>
+            <SelectTrigger data-testid="sessions-user-filter"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All employees</SelectItem>
+              {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {/* Report builder */}
+      <section className="border border-gray-200 rounded-sm p-4 space-y-3" data-testid="sessions-report-builder">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="space-y-1 flex-1 min-w-[180px]">
+            <Label className="text-[11px] uppercase tracking-wider">Period</Label>
+            <Select value={period} onValueChange={setPeriod}>
+              <SelectTrigger data-testid="sessions-period-select"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All employees</SelectItem>
-                {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
+                <SelectItem value="daily">Last 24 hours</SelectItem>
+                <SelectItem value="weekly">Last 7 days</SelectItem>
+                <SelectItem value="monthly">Last 30 days</SelectItem>
+                <SelectItem value="all">All time</SelectItem>
+                <SelectItem value="custom">Custom range</SelectItem>
               </SelectContent>
             </Select>
           </div>
-          <Button onClick={() => downloadExcel("daily")} variant="outline" className="rounded-sm" data-testid="download-sessions-daily">
-            <FileXls size={14} weight="bold" className="mr-1" /> Daily
-          </Button>
-          <Button onClick={() => downloadExcel("weekly")} variant="outline" className="rounded-sm" data-testid="download-sessions-weekly">
-            <FileXls size={14} weight="bold" className="mr-1" /> Weekly
-          </Button>
-          <Button onClick={() => downloadExcel("monthly")} className="bg-[#0a0a0a] text-white hover:bg-gray-800 rounded-sm" data-testid="download-sessions-monthly">
-            <FileXls size={14} weight="bold" className="mr-1" /> Monthly
+          {period === "custom" && (
+            <>
+              <div className="space-y-1">
+                <Label className="text-[11px] uppercase tracking-wider">From</Label>
+                <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} data-testid="sessions-custom-from" />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[11px] uppercase tracking-wider">To</Label>
+                <Input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} data-testid="sessions-custom-to" />
+              </div>
+            </>
+          )}
+          <Button
+            onClick={generate}
+            disabled={generating}
+            className="bg-[#0047AB] hover:bg-[#0033A0] text-white rounded-sm h-10"
+            data-testid="sessions-generate-button"
+          >
+            <FileXls size={16} weight="bold" className="mr-1" />
+            {generating ? "Generating…" : "Generate report"}
           </Button>
         </div>
-      </div>
+        <p className="text-[11px] text-gray-500">
+          Pick a preset or define a custom date range, then click <b>Generate report</b> to download as Excel.
+        </p>
+      </section>
 
       <div className="grid grid-cols-3 gap-4">
         <div className="border border-gray-200 rounded-sm p-4">

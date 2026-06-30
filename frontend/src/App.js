@@ -13,6 +13,7 @@ import AdminUsers from "@/pages/AdminUsers";
 import AdminSettings from "@/pages/AdminSettings";
 import AdminSessions from "@/pages/AdminSessions";
 import AgentProfile from "@/pages/AgentProfile";
+import PublicRate from "@/pages/PublicRate";
 import "@/App.css";
 
 const ProtectedRoute = ({ adminOnly = false }) => {
@@ -29,6 +30,7 @@ function App() {
       <AuthProvider>
         <BrowserRouter>
           <Routes>
+            <Route path="/rate/:ticketNumber" element={<PublicRate />} />
             <Route path="/login" element={<Login />} />
             <Route element={<ProtectedRoute />}>
               <Route element={<AppLayout />}>

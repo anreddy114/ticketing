@@ -596,6 +596,63 @@ async def send_whatsapp_message(mobile: str, message: str, ticket_id: str, kind:
     return doc
 
 
+async def send_whatsapp_text_freeform(mobile: str, message: str, ticket_id: str, kind: str):
+    """Send a free-text (non-template) WhatsApp message. Only works inside a
+    24-hour customer service window. Logs failures silently to whatsapp_messages."""
+    version = os.environ.get("WHATSAPP_GRAPH_VERSION", "v21.0")
+    phone_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
+    token = os.environ.get("WHATSAPP_ACCESS_TOKEN")
+    to = _format_msisdn(mobile)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "ticket_id": ticket_id,
+        "mobile": to,
+        "message": message,
+        "kind": kind,
+        "status": "pending",
+        "provider": "meta_whatsapp_cloud",
+        "provider_message_id": None,
+        "provider_response": None,
+        "template_name": None,
+        "template_params": [],
+        "error": None,
+        "created_at": now_iso(),
+    }
+    if not phone_id or not token:
+        doc["status"] = "skipped_not_configured"
+        await db.whatsapp_messages.insert_one(doc)
+        return doc
+    url = f"https://graph.facebook.com/{version}/{phone_id}/messages"
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "text",
+        "text": {"preview_url": True, "body": message},
+    }
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=15) as cli:
+            r = await cli.post(url, json=payload, headers=headers)
+        try:
+            body = r.json()
+        except Exception:
+            body = {"raw": r.text}
+        doc["provider_response"] = body
+        if r.status_code in (200, 201) and isinstance(body, dict) and body.get("messages"):
+            doc["status"] = "sent"
+            doc["provider_message_id"] = body["messages"][0].get("id")
+        else:
+            doc["status"] = "failed"
+            err = body.get("error") if isinstance(body, dict) else None
+            doc["error"] = (err or {}).get("message", f"HTTP {r.status_code}") if isinstance(err, dict) else f"HTTP {r.status_code}"
+    except Exception as e:
+        doc["status"] = "failed"
+        doc["error"] = f"network: {e}"
+    await db.whatsapp_messages.insert_one(doc)
+    return doc
+
+
 @api.get("/whatsapp/messages")
 async def list_whatsapp_messages(
     ticket_id: Optional[str] = None,
@@ -850,6 +907,14 @@ async def change_status(ticket_id: str, payload: TicketStatusIn, user: dict = De
                 t.get("assigned_to_name") or "Support Team",
             ],
         )
+        # Follow up with a free-text 1-click rating link (works inside the 24h window)
+        rate_base = os.environ.get("PUBLIC_RATE_BASE_URL", "").rstrip("/")
+        if rate_base:
+            rate_url = f"{rate_base}/rate/{t['ticket_number']}"
+            follow_up = (
+                f"How was your experience? Rate ticket {t['ticket_number']} in 1 click: {rate_url}"
+            )
+            await send_whatsapp_text_freeform(t["customer_mobile"], follow_up, ticket_id, "rating_request")
 
     return await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
 
@@ -1373,6 +1438,53 @@ async def public_issue_types(request: Request):
 
 
 # ====================================================================
+# Public 1-click rating page (open by ticket number — no key needed)
+# ====================================================================
+
+@api.get("/public/ticket-info/{ticket_number}")
+async def public_ticket_info(ticket_number: str):
+    """Minimal ticket info for the customer-facing rating page."""
+    t = await db.tickets.find_one({"ticket_number": ticket_number}, {"_id": 0})
+    if not t:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    fb = await db.feedback.find_one({"ticket_id": t["id"]}, {"_id": 0})
+    return {
+        "ticket_number": t["ticket_number"],
+        "customer_name": t.get("customer_name"),
+        "issue_type_name": t.get("issue_type_name"),
+        "status": t["status"],
+        "assigned_to_name": t.get("assigned_to_name"),
+        "closed_at": t.get("closed_at"),
+        "already_rated": bool(fb),
+        "rating": fb.get("rating") if fb else None,
+    }
+
+
+class PublicRateIn(BaseModel):
+    rating: int
+    comment: Optional[str] = ""
+
+
+@api.post("/public/rate/{ticket_number}")
+async def public_rate_ticket(ticket_number: str, payload: PublicRateIn):
+    """Customer-facing 1-click rating. No API key (the ticket number is the magic key)."""
+    if not (1 <= payload.rating <= 5):
+        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
+    t = await db.tickets.find_one({"ticket_number": ticket_number})
+    if not t:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    fb_payload = FeedbackIn(
+        ticket_id=t["id"],
+        rating=payload.rating,
+        comment=payload.comment or "",
+        source="website",
+        customer_mobile=t.get("customer_mobile"),
+    )
+    doc = await _submit_feedback(fb_payload)
+    return {"ok": True, "rating": doc["rating"], "ticket_number": ticket_number}
+
+
+# ====================================================================
 # Customer feedback / ratings
 # ====================================================================
 
@@ -1495,11 +1607,13 @@ async def get_user_profile(user_id: str, _: dict = Depends(get_current_user)):
 
 @api.get("/reports/sessions.xlsx")
 async def export_sessions_xlsx(
-    period: Literal["daily", "weekly", "monthly", "all"] = "daily",
+    period: Literal["daily", "weekly", "monthly", "all", "custom"] = "daily",
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     user_id: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
-    """Excel report of agent login sessions aggregated by period."""
+    """Excel report of agent login sessions. Supports daily/weekly/monthly/all/custom range."""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
     from io import BytesIO
@@ -1513,16 +1627,26 @@ async def export_sessions_xlsx(
 
     # Date filter
     now_t = datetime.now(timezone.utc)
+    since = None
+    until = None
     if period == "daily":
         since = now_t - timedelta(days=1)
     elif period == "weekly":
         since = now_t - timedelta(days=7)
     elif period == "monthly":
         since = now_t - timedelta(days=30)
-    else:
-        since = None
+    elif period == "custom":
+        since = _parse_dt(date_from)
+        until = _parse_dt(date_to)
+        if not since and not until:
+            raise HTTPException(status_code=400, detail="Custom range requires date_from and/or date_to")
+    rng: dict = {}
     if since:
-        q["login_at"] = {"$gte": since.isoformat()}
+        rng["$gte"] = since.isoformat()
+    if until:
+        rng["$lte"] = until.isoformat()
+    if rng:
+        q["login_at"] = rng
 
     sessions = await db.agent_sessions.find(q, {"_id": 0}).sort("login_at", -1).to_list(10000)
 

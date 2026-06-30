@@ -397,6 +397,33 @@ export default function TicketDetail() {
             </div>
           )}
 
+          {ticket.source === "customer" && ticket.status === "closed" && !feedback && (
+            <div className="border border-gray-200 rounded-sm p-5 space-y-2" data-testid="rate-link-panel">
+              <p className="text-xs uppercase tracking-wider text-gray-500 font-bold">Customer Rating Link</p>
+              <p className="text-xs text-gray-600">Share this 1-click link with the customer to collect a star rating:</p>
+              <div className="flex items-center gap-2">
+                <input
+                  readOnly
+                  value={`${window.location.origin}/rate/${ticket.ticket_number}`}
+                  className="flex-1 text-xs font-mono px-2 py-1.5 border border-gray-200 rounded-sm bg-gray-50"
+                  data-testid="rate-link-input"
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="rounded-sm h-8"
+                  onClick={() => {
+                    navigator.clipboard.writeText(`${window.location.origin}/rate/${ticket.ticket_number}`);
+                    toast.message("Copied to clipboard");
+                  }}
+                  data-testid="rate-link-copy"
+                >
+                  Copy
+                </Button>
+              </div>
+            </div>
+          )}
+
           {ticket.source === "customer" && (
             <div className="border border-gray-200 rounded-sm p-5 space-y-3" data-testid="whatsapp-log">
               <p className="text-xs uppercase tracking-wider text-gray-500 font-bold flex items-center gap-1">
