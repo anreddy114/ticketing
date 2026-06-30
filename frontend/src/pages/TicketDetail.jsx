@@ -36,6 +36,8 @@ export default function TicketDetail() {
   const [transferNote, setTransferNote] = useState("");
   const [whatsapp, setWhatsapp] = useState([]);
   const [transferOpen, setTransferOpen] = useState(false);
+  const [closeOpen, setCloseOpen] = useState(false);
+  const [resolution, setResolution] = useState("");
 
   const load = useCallback(async () => {
     const { data } = await api.get(`/tickets/${id}`);
@@ -47,12 +49,12 @@ export default function TicketDetail() {
 
   useEffect(() => {
     load();
-    api.get("/users").then((r) => setUsers(r.data.filter((x) => x.active)));
+    api.get("/agents").then((r) => setUsers(r.data.filter((x) => x.active)));
   }, [load]);
 
-  const changeStatus = async (status) => {
+  const changeStatus = async (status, extra = {}) => {
     try {
-      await api.post(`/tickets/${id}/status`, { status });
+      await api.post(`/tickets/${id}/status`, { status, ...extra });
       toast.success(`Status updated to ${status}`);
       if (status === "closed" && ticket?.source === "customer") {
         toast.message("WhatsApp closure message sent", { description: ticket?.customer_mobile });
@@ -127,12 +129,22 @@ export default function TicketDetail() {
                     <DialogTitle className="font-display tracking-tight">Transfer Ticket</DialogTitle>
                   </DialogHeader>
                   <div className="space-y-3">
-                    <p className="text-xs text-gray-500">Currently assigned to <b>{ticket.assigned_to_name}</b>.</p>
+                    <p className="text-xs text-gray-500">
+                      Currently assigned to <b>{ticket.assigned_to_name}</b>. Only <b>online</b> employees can receive transfers.
+                    </p>
                     <Select value={transferTo} onValueChange={setTransferTo}>
-                      <SelectTrigger data-testid="transfer-user-select"><SelectValue placeholder="Select employee" /></SelectTrigger>
+                      <SelectTrigger data-testid="transfer-user-select"><SelectValue placeholder="Select online employee" /></SelectTrigger>
                       <SelectContent>
-                        {users.filter((u) => u.id !== ticket.assigned_to).map((u) => (
-                          <SelectItem key={u.id} value={u.id}>{u.name} · {u.role}</SelectItem>
+                        {users.filter((u) => u.id !== ticket.assigned_to && u.online).length === 0 && (
+                          <div className="px-3 py-4 text-xs text-gray-500">No other employees are online right now.</div>
+                        )}
+                        {users.filter((u) => u.id !== ticket.assigned_to && u.online).map((u) => (
+                          <SelectItem key={u.id} value={u.id}>
+                            <span className="inline-flex items-center gap-2">
+                              <span className="w-1.5 h-1.5 rounded-full bg-[#16A34A]" />
+                              {u.name} · {u.role}
+                            </span>
+                          </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -152,9 +164,45 @@ export default function TicketDetail() {
               </Dialog>
             )}
             {!isClosed && (
-              <Button onClick={() => changeStatus("closed")} className="bg-[#16A34A] hover:bg-green-700 text-white rounded-sm" data-testid="close-ticket-button">
-                <CheckCircle size={16} weight="bold" className="mr-1" /> Close Ticket
-              </Button>
+              <Dialog open={closeOpen} onOpenChange={(o) => { setCloseOpen(o); if (!o) setResolution(""); }}>
+                <DialogTrigger asChild>
+                  <Button className="bg-[#16A34A] hover:bg-green-700 text-white rounded-sm" data-testid="close-ticket-button">
+                    <CheckCircle size={16} weight="bold" className="mr-1" /> Close Ticket
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="rounded-sm">
+                  <DialogHeader>
+                    <DialogTitle className="font-display tracking-tight">Close ticket — add resolution</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-3">
+                    <p className="text-xs text-gray-500">
+                      Briefly describe how the issue was resolved. This is saved on the ticket and shown in the activity log.
+                    </p>
+                    <Textarea
+                      placeholder="e.g. Reset customer's STB, signal restored. Confirmed with customer over call."
+                      value={resolution}
+                      onChange={(e) => setResolution(e.target.value)}
+                      rows={5}
+                      data-testid="close-resolution-input"
+                    />
+                  </div>
+                  <DialogFooter>
+                    <Button variant="outline" className="rounded-sm" onClick={() => setCloseOpen(false)}>Cancel</Button>
+                    <Button
+                      onClick={async () => {
+                        if (!resolution.trim()) { toast.error("Resolution is required"); return; }
+                        await changeStatus("closed", { resolution: resolution.trim() });
+                        setCloseOpen(false);
+                        setResolution("");
+                      }}
+                      className="bg-[#16A34A] hover:bg-green-700 text-white rounded-sm"
+                      data-testid="close-confirm-button"
+                    >
+                      <CheckCircle size={16} weight="bold" className="mr-1" /> Confirm &amp; close
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
             )}
             {isClosed && (
               <Button onClick={() => changeStatus("open")} variant="outline" className="rounded-sm" data-testid="reopen-ticket-button">
@@ -275,6 +323,15 @@ export default function TicketDetail() {
               <div>
                 <p className="text-[11px] uppercase text-gray-400 tracking-wider">Closed</p>
                 <p className="text-xs text-gray-700">{formatDate(ticket.closed_at)}</p>
+              </div>
+            )}
+            {ticket.resolution && (
+              <div className="border-t border-gray-100 pt-3">
+                <p className="text-[11px] uppercase text-gray-400 tracking-wider font-bold">Resolution</p>
+                <p className="text-xs text-gray-800 whitespace-pre-wrap mt-1" data-testid="ticket-resolution">{ticket.resolution}</p>
+                {ticket.closed_by_name && (
+                  <p className="text-[10px] text-gray-400 mt-1">Closed by {ticket.closed_by_name}</p>
+                )}
               </div>
             )}
           </div>

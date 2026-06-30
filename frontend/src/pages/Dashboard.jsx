@@ -1,22 +1,28 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { StatusBadge, PriorityBadge } from "@/components/Badges";
 import { Ticket, Clock, CheckCircle, WarningCircle } from "@phosphor-icons/react";
 
-const StatCard = ({ label, value, icon: Icon, tone, testId }) => (
-  <div data-testid={testId} className="border border-gray-200 bg-white p-6 transition-all hover:-translate-y-0.5 hover:shadow-sm hover:border-gray-300 rounded-sm">
+const StatCard = ({ label, value, icon: Icon, tone, testId, onClick }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    data-testid={testId}
+    className="text-left border border-gray-200 bg-white p-6 transition-all hover:-translate-y-0.5 hover:shadow-sm hover:border-gray-300 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0047AB] focus:ring-offset-1"
+  >
     <div className="flex items-center justify-between mb-3">
       <p className="text-xs uppercase tracking-[0.2em] text-gray-500 font-bold">{label}</p>
       <Icon size={20} weight="bold" className={tone} />
     </div>
     <p className="font-display text-4xl sm:text-5xl font-black tracking-tight">{value}</p>
-  </div>
+  </button>
 );
 
 export default function Dashboard() {
   const [summary, setSummary] = useState(null);
   const [recent, setRecent] = useState([]);
+  const navigate = useNavigate();
 
   const load = async () => {
     const [s, r] = await Promise.all([
@@ -29,28 +35,30 @@ export default function Dashboard() {
 
   useEffect(() => { load(); }, []);
 
+  const goTo = (status) => () => navigate(status ? `/tickets?status=${status}` : "/tickets");
+
   return (
     <div className="space-y-8" data-testid="dashboard-page">
       <div className="flex items-end justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-gray-500 font-bold">Overview</p>
           <h1 className="font-display text-4xl sm:text-5xl font-black tracking-tight">Dashboard</h1>
-          <p className="text-sm text-gray-500 mt-1">Real-time snapshot of your ticket pipeline.</p>
+          <p className="text-sm text-gray-500 mt-1">Click any tile to drill into the filtered list.</p>
         </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 fade-in-stagger">
-        <StatCard label="Total Tickets" value={summary?.totals.total ?? "—"} icon={Ticket} tone="text-[#0047AB]" testId="stat-total" />
-        <StatCard label="Open" value={summary?.totals.open ?? "—"} icon={WarningCircle} tone="text-[#FF2400]" testId="stat-open" />
-        <StatCard label="In Progress" value={summary?.totals.in_progress ?? "—"} icon={Clock} tone="text-[#0EA5E9]" testId="stat-in-progress" />
-        <StatCard label="Closed" value={summary?.totals.closed ?? "—"} icon={CheckCircle} tone="text-[#16A34A]" testId="stat-closed" />
+        <StatCard label="Total Tickets" value={summary?.totals.total ?? "—"} icon={Ticket} tone="text-[#0047AB]" testId="stat-total" onClick={goTo(null)} />
+        <StatCard label="Open" value={summary?.totals.open ?? "—"} icon={WarningCircle} tone="text-[#FF2400]" testId="stat-open" onClick={goTo("open")} />
+        <StatCard label="In Progress" value={summary?.totals.in_progress ?? "—"} icon={Clock} tone="text-[#0EA5E9]" testId="stat-in-progress" onClick={goTo("in_progress")} />
+        <StatCard label="Closed" value={summary?.totals.closed ?? "—"} icon={CheckCircle} tone="text-[#16A34A]" testId="stat-closed" onClick={goTo("closed")} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 border border-gray-200 rounded-sm">
           <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
             <h2 className="font-display font-bold tracking-tight">My Recent Tickets</h2>
-            <Link to="/tickets?mine=1" className="text-xs font-bold uppercase tracking-wider text-[#0047AB] hover:underline">
+            <Link to="/tickets" className="text-xs font-bold uppercase tracking-wider text-[#0047AB] hover:underline">
               View all →
             </Link>
           </div>

@@ -11,6 +11,7 @@ import Reports from "@/pages/Reports";
 import AdminIssueTypes from "@/pages/AdminIssueTypes";
 import AdminUsers from "@/pages/AdminUsers";
 import AdminSettings from "@/pages/AdminSettings";
+import AdminSessions from "@/pages/AdminSessions";
 import "@/App.css";
 
 const ProtectedRoute = ({ adminOnly = false }) => {
@@ -39,6 +40,7 @@ function App() {
                   <Route path="/admin/issue-types" element={<AdminIssueTypes />} />
                   <Route path="/admin/users" element={<AdminUsers />} />
                   <Route path="/admin/settings" element={<AdminSettings />} />
+                  <Route path="/admin/sessions" element={<AdminSessions />} />
                 </Route>
               </Route>
             </Route>

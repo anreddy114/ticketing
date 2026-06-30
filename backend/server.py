@@ -169,6 +169,7 @@ class TicketCommentIn(BaseModel):
 class TicketStatusIn(BaseModel):
     status: Literal["open", "in_progress", "closed"]
     note: Optional[str] = ""
+    resolution: Optional[str] = None  # required when closing
 
 
 class PresenceIn(BaseModel):
@@ -277,12 +278,42 @@ async def login(payload: LoginIn, response: Response):
         "access_token", token, httponly=True, secure=False, samesite="lax",
         max_age=12 * 3600, path="/",
     )
+    # Start agent session
+    session_id = str(uuid.uuid4())
+    await db.agent_sessions.insert_one({
+        "id": session_id,
+        "user_id": user["id"],
+        "user_name": user["name"],
+        "login_at": now_iso(),
+        "logout_at": None,
+        "duration_sec": None,
+    })
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"current_session_id": session_id, "last_login_at": now_iso()}},
+    )
     return {"token": token, "user": sanitize_user(user)}
 
 
 @api.post("/auth/logout")
-async def logout(response: Response, _: dict = Depends(get_current_user)):
+async def logout(response: Response, user: dict = Depends(get_current_user)):
     response.delete_cookie("access_token", path="/")
+    # End agent session
+    sid = user.get("current_session_id")
+    if sid:
+        sess = await db.agent_sessions.find_one({"id": sid})
+        if sess and not sess.get("logout_at"):
+            t0 = datetime.fromisoformat(sess["login_at"].replace("Z", "+00:00"))
+            t1 = datetime.now(timezone.utc)
+            await db.agent_sessions.update_one(
+                {"id": sid},
+                {"$set": {"logout_at": t1.isoformat(), "duration_sec": int((t1 - t0).total_seconds())}},
+            )
+    # Mark offline (but do NOT redistribute — they may log back in shortly)
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"online": False, "current_session_id": None}},
+    )
     return {"ok": True}
 
 
@@ -669,7 +700,10 @@ async def list_tickets(
         q["status"] = status
     if issue_type_id:
         q["issue_type_id"] = issue_type_id
-    if mine:
+    # Non-admins always see only their own tickets
+    if user.get("role") != "admin":
+        q["assigned_to"] = user["id"]
+    elif mine:
         q["assigned_to"] = user["id"]
     elif assigned_to:
         q["assigned_to"] = assigned_to
@@ -739,24 +773,33 @@ async def change_status(ticket_id: str, payload: TicketStatusIn, user: dict = De
         raise HTTPException(status_code=404, detail="Ticket not found")
     if t["status"] == payload.status:
         raise HTTPException(status_code=400, detail="Ticket already in this status")
+    if payload.status == "closed" and not (payload.resolution or "").strip():
+        raise HTTPException(status_code=400, detail="Resolution message is required to close a ticket")
     update = {"status": payload.status, "updated_at": now_iso()}
     if payload.status == "closed":
         update["closed_at"] = now_iso()
+        update["resolution"] = payload.resolution.strip()
+        update["closed_by"] = user["id"]
+        update["closed_by_name"] = user["name"]
     await db.tickets.update_one({"id": ticket_id}, {"$set": update})
+    msg = f"Status changed from {t['status']} to {payload.status}"
+    if payload.status == "closed":
+        msg += f". Resolution: {payload.resolution.strip()}"
+    if payload.note:
+        msg += f". Note: {payload.note}"
     await log_event(
-        ticket_id, user, "status_change",
-        f"Status changed from {t['status']} to {payload.status}" + (f". Note: {payload.note}" if payload.note else ""),
-        meta={"from": t["status"], "to": payload.status},
+        ticket_id, user, "status_change", msg,
+        meta={"from": t["status"], "to": payload.status, "resolution": payload.resolution if payload.status == "closed" else None},
     )
 
     # Send WhatsApp on close
     if payload.status == "closed" and t.get("source") == "customer" and t.get("customer_mobile"):
-        msg = (
+        wa_msg = (
             f"Hi {t.get('customer_name', 'Customer')}, your ticket {t['ticket_number']} "
             f"has been closed. Thank you for reaching out."
         )
         await send_whatsapp_message(
-            t["customer_mobile"], msg, ticket_id, "closed",
+            t["customer_mobile"], wa_msg, ticket_id, "closed",
             template_params=[
                 t.get("customer_name") or "Customer",
                 t["ticket_number"],
@@ -770,14 +813,19 @@ async def change_status(ticket_id: str, payload: TicketStatusIn, user: dict = De
 
 # ---------- Reports ----------
 @api.get("/reports/summary")
-async def reports_summary(_: dict = Depends(get_current_user)):
-    total = await db.tickets.count_documents({})
-    open_c = await db.tickets.count_documents({"status": "open"})
-    in_prog = await db.tickets.count_documents({"status": "in_progress"})
-    closed = await db.tickets.count_documents({"status": "closed"})
+async def reports_summary(user: dict = Depends(get_current_user)):
+    match: dict = {}
+    if user.get("role") != "admin":
+        match["assigned_to"] = user["id"]
+    total = await db.tickets.count_documents(match)
+    open_c = await db.tickets.count_documents({**match, "status": "open"})
+    in_prog = await db.tickets.count_documents({**match, "status": "in_progress"})
+    closed = await db.tickets.count_documents({**match, "status": "closed"})
+
+    base_pipeline = [{"$match": match}] if match else []
 
     # By issue type
-    pipe_type = [
+    pipe_type = base_pipeline + [
         {"$group": {"_id": "$issue_type_name", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}},
     ]
@@ -785,7 +833,7 @@ async def reports_summary(_: dict = Depends(get_current_user)):
     by_type = [{"name": x["_id"] or "Unknown", "count": x["count"]} for x in by_type]
 
     # By assignee
-    pipe_assignee = [
+    pipe_assignee = base_pipeline + [
         {"$group": {"_id": "$assigned_to_name", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}},
     ]
@@ -793,7 +841,7 @@ async def reports_summary(_: dict = Depends(get_current_user)):
     by_assignee = [{"name": x["_id"] or "Unknown", "count": x["count"]} for x in by_assignee]
 
     # By priority
-    pipe_priority = [
+    pipe_priority = base_pipeline + [
         {"$group": {"_id": "$priority", "count": {"$sum": 1}}},
     ]
     by_priority = await db.tickets.aggregate(pipe_priority).to_list(100)
@@ -944,9 +992,11 @@ async def set_presence(payload: PresenceIn, user: dict = Depends(get_current_use
 
     When going offline, redistribute open tickets per system offline_strategy.
     The frontend may pass `transfer_to` (user id) for the 'manual_transfer' strategy.
+    Also logs an admin notification.
     """
     moved = 0
-    if not payload.online and user.get("online"):
+    previously_online = bool(user.get("online"))
+    if not payload.online and previously_online:
         settings = await _get_settings()
         strategy = settings["offline_strategy"]
         if strategy == "manual_transfer" and not payload.transfer_to:
@@ -960,7 +1010,195 @@ async def set_presence(payload: PresenceIn, user: dict = Depends(get_current_use
         {"id": user["id"]},
         {"$set": {"online": payload.online, "last_seen": now_iso()}},
     )
+
+    # Drop an admin notification (only when state actually changes)
+    if previously_online != payload.online:
+        notif = {
+            "id": str(uuid.uuid4()),
+            "kind": "agent_online" if payload.online else "agent_offline",
+            "actor_id": user["id"],
+            "actor_name": user["name"],
+            "message": f"{user['name']} is now {'online' if payload.online else 'offline'}",
+            "tickets_reassigned": moved,
+            "for_admin": True,
+            "read_by": [],
+            "created_at": now_iso(),
+        }
+        await db.notifications.insert_one(notif)
+
     return {"ok": True, "online": payload.online, "tickets_reassigned": moved}
+
+
+# ====================================================================
+# Notifications (admin)
+# ====================================================================
+
+@api.get("/notifications")
+async def list_notifications(user: dict = Depends(get_current_user), unread_only: bool = False):
+    if user.get("role") != "admin":
+        return []
+    q: dict = {"for_admin": True}
+    if unread_only:
+        q["read_by"] = {"$nin": [user["id"]]}
+    notifs = await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return notifs
+
+
+@api.post("/notifications/mark-read")
+async def mark_notifications_read(user: dict = Depends(require_admin)):
+    await db.notifications.update_many(
+        {"for_admin": True, "read_by": {"$nin": [user["id"]]}},
+        {"$addToSet": {"read_by": user["id"]}},
+    )
+    return {"ok": True}
+
+
+# ====================================================================
+# Agent sessions (login/logout audit)
+# ====================================================================
+
+@api.get("/agents/sessions")
+async def list_sessions(
+    user_id: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    """Admins see all sessions; agents see only their own."""
+    q: dict = {}
+    if user.get("role") != "admin":
+        q["user_id"] = user["id"]
+    elif user_id:
+        q["user_id"] = user_id
+    sessions = await db.agent_sessions.find(q, {"_id": 0}).sort("login_at", -1).to_list(500)
+    # compute live duration for active sessions
+    now_t = datetime.now(timezone.utc)
+    for s in sessions:
+        if not s.get("logout_at"):
+            try:
+                t0 = datetime.fromisoformat(s["login_at"].replace("Z", "+00:00"))
+                s["duration_sec"] = int((now_t - t0).total_seconds())
+                s["active"] = True
+            except Exception:
+                s["active"] = True
+        else:
+            s["active"] = False
+    return sessions
+
+
+# ====================================================================
+# Public website API — for customer-facing site to create tickets
+# ====================================================================
+
+def _require_public_key(request: Request):
+    expected = os.environ.get("PUBLIC_API_KEY", "")
+    if not expected:
+        return  # not configured → allow (dev mode)
+    got = request.headers.get("X-Public-Api-Key") or request.query_params.get("api_key")
+    if got != expected:
+        raise HTTPException(status_code=401, detail="Invalid public API key")
+
+
+class PublicTicketIn(BaseModel):
+    customer_mobile: str
+    customer_name: Optional[str] = None
+    issue_type_id: Optional[str] = None
+    issue_type_name: Optional[str] = None
+    title: str
+    description: str
+    priority: Literal["low", "medium", "high", "urgent"] = "medium"
+
+
+@api.get("/public/customers/lookup")
+async def public_lookup_customer(mobile: str = Query(..., min_length=4), request: Request = None):
+    """Same as internal lookup but auth via public API key. Use this from your website."""
+    _require_public_key(request)
+    cust = await _smartplay_lookup_silent(mobile)
+    if not cust:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return cust
+
+
+@api.post("/public/tickets")
+async def public_create_ticket(payload: PublicTicketIn, request: Request):
+    """Public endpoint your website calls to create a ticket on behalf of a customer."""
+    _require_public_key(request)
+
+    # Resolve issue type
+    issue = None
+    if payload.issue_type_id:
+        issue = await db.issue_types.find_one({"id": payload.issue_type_id, "active": True})
+    if not issue and payload.issue_type_name:
+        issue = await db.issue_types.find_one({"name": payload.issue_type_name, "active": True})
+    if not issue:
+        issue = (
+            await db.issue_types.find_one({"name": "General Inquiry", "active": True})
+            or await db.issue_types.find_one({"active": True})
+        )
+    if not issue:
+        raise HTTPException(status_code=500, detail="No issue types configured")
+
+    # Enrich with SmartPlay if name missing
+    customer = await _smartplay_lookup_silent(payload.customer_mobile) or {}
+    customer_name = (payload.customer_name or customer.get("name") or "Customer").strip()
+
+    # Auto-assign to an online agent (round-robin), else fallback
+    assignee = await _round_robin_pick()
+    if not assignee:
+        assignee = await _resolve_fallback_user()
+    if not assignee:
+        raise HTTPException(status_code=500, detail="No assignee available")
+
+    tnum = await next_ticket_number()
+    ticket = {
+        "id": str(uuid.uuid4()),
+        "ticket_number": tnum,
+        "source": "customer",
+        "customer_mobile": payload.customer_mobile.strip(),
+        "customer_name": customer_name,
+        "customer_email": customer.get("email"),
+        "customer_package": customer.get("package"),
+        "customer_expiry": customer.get("expiry_date"),
+        "customer_partner": customer.get("partner"),
+        "customer_acc_id": customer.get("acc_id"),
+        "issue_type_id": issue["id"],
+        "issue_type_name": issue["name"],
+        "title": payload.title.strip(),
+        "description": payload.description.strip(),
+        "priority": payload.priority,
+        "status": "open",
+        "created_by": "public_website",
+        "created_by_name": "Website",
+        "assigned_to": assignee["id"],
+        "assigned_to_name": assignee["name"],
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "closed_at": None,
+        "origin_channel": "public_website",
+    }
+    await db.tickets.insert_one(ticket)
+
+    actor = {"id": "public_website", "name": "Website"}
+    await log_event(
+        ticket["id"], actor, "created",
+        f"Ticket created from customer website. Auto-assigned to {assignee['name']}.",
+    )
+
+    await send_whatsapp_message(
+        ticket["customer_mobile"],
+        f"Hi {customer_name}, your ticket {tnum} has been created. Issue: {issue['name']}. Our team will reach out shortly.",
+        ticket["id"], "created",
+        template_params=[customer_name, tnum, issue["name"]],
+    )
+
+    ticket.pop("_id", None)
+    return ticket
+
+
+@api.get("/public/issue-types")
+async def public_issue_types(request: Request):
+    """Public — list active issue types so your website can render a dropdown."""
+    _require_public_key(request)
+    items = await db.issue_types.find({"active": True}, {"_id": 0, "description": 0}).to_list(100)
+    return items
 
 
 # ====================================================================

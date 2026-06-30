@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -8,15 +9,33 @@ import { StatusBadge, PriorityBadge } from "@/components/Badges";
 import { Plus, MagnifyingGlass } from "@phosphor-icons/react";
 
 export default function Tickets() {
+  const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const isAdmin = user?.role === "admin";
+
+  const initStatus = searchParams.get("status") || "all";
   const [tickets, setTickets] = useState([]);
   const [issueTypes, setIssueTypes] = useState([]);
-  const [filters, setFilters] = useState({ status: "all", mine: false, issue_type_id: "all", search: "" });
+  const [filters, setFilters] = useState({
+    status: initStatus,
+    mine: false,
+    issue_type_id: "all",
+    search: "",
+  });
+
+  // keep URL search param in sync (so deep-links work)
+  useEffect(() => {
+    const p = new URLSearchParams();
+    if (filters.status !== "all") p.set("status", filters.status);
+    setSearchParams(p, { replace: true });
+    // eslint-disable-next-line
+  }, [filters.status]);
 
   const load = async () => {
     const params = {};
     if (filters.status && filters.status !== "all") params.status = filters.status;
     if (filters.issue_type_id && filters.issue_type_id !== "all") params.issue_type_id = filters.issue_type_id;
-    if (filters.mine) params.mine = true;
+    if (isAdmin && filters.mine) params.mine = true;
     if (filters.search) params.search = filters.search;
     const { data } = await api.get("/tickets", { params });
     setTickets(data);
@@ -29,15 +48,20 @@ export default function Tickets() {
   useEffect(() => {
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line
   }, [filters]);
 
   return (
     <div className="space-y-6" data-testid="tickets-page">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-gray-500 font-bold">All Tickets</p>
+          <p className="text-xs uppercase tracking-[0.2em] text-gray-500 font-bold">
+            {isAdmin ? "All Tickets" : "My Tickets"}
+          </p>
           <h1 className="font-display text-3xl sm:text-4xl font-black tracking-tight">Tickets</h1>
+          {!isAdmin && (
+            <p className="text-xs text-gray-500 mt-1">Showing tickets assigned to you.</p>
+          )}
         </div>
         <Button asChild className="bg-[#0047AB] hover:bg-[#0033A0] text-white rounded-sm">
           <Link to="/tickets/new" data-testid="tickets-new-button"><Plus size={16} weight="bold" className="mr-1" /> New Ticket</Link>
@@ -71,16 +95,18 @@ export default function Tickets() {
             {issueTypes.map((t) => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
           </SelectContent>
         </Select>
-        <label className="md:col-span-4 inline-flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={filters.mine}
-            onChange={(e) => setFilters({ ...filters, mine: e.target.checked })}
-            data-testid="tickets-mine-checkbox"
-            className="accent-[#0047AB]"
-          />
-          Show only my assigned tickets
-        </label>
+        {isAdmin && (
+          <label className="md:col-span-4 inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={filters.mine}
+              onChange={(e) => setFilters({ ...filters, mine: e.target.checked })}
+              data-testid="tickets-mine-checkbox"
+              className="accent-[#0047AB]"
+            />
+            Show only my assigned tickets
+          </label>
+        )}
       </div>
 
       <div className="border border-gray-200 rounded-sm overflow-x-auto">

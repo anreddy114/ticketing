@@ -135,6 +135,49 @@ export default function AdminSettings() {
           <p className="text-xs">Heartbeat timeout: <b>{settings.heartbeat_timeout_sec}s</b> (an agent without a ping for longer is treated as offline).</p>
         </div>
       </section>
+
+      <section className="border border-gray-200 rounded-sm p-6 space-y-4">
+        <h2 className="font-display text-lg font-bold tracking-tight">Public Website API</h2>
+        <p className="text-xs text-gray-500">
+          Use these endpoints from your customer-facing website. Include your public API key in the <code className="px-1 bg-gray-100 rounded">X-Public-Api-Key</code> header.
+        </p>
+
+        <Endpoint
+          label="Lookup customer by mobile (from website form)"
+          method="GET"
+          url={`${backend}/api/public/customers/lookup?mobile=9866334450`}
+          payload=""
+          onCopy={copy}
+        />
+
+        <Endpoint
+          label="Active issue types (for dropdown)"
+          method="GET"
+          url={`${backend}/api/public/issue-types`}
+          payload=""
+          onCopy={copy}
+        />
+
+        <Endpoint
+          label="Create ticket from website"
+          method="POST"
+          url={`${backend}/api/public/tickets`}
+          payload={`{
+  "customer_mobile": "9866334450",
+  "customer_name": "Anand Reddy",
+  "issue_type_name": "Technical",
+  "title": "Signal not working",
+  "description": "No signal since morning",
+  "priority": "high"
+}`}
+          onCopy={copy}
+        />
+
+        <p className="text-[11px] text-gray-500">
+          Auto-assigns to an online agent (round-robin). Falls back to the configured fallback employee if no one is online. Triggers WhatsApp ticket-created template.
+          Set <code>PUBLIC_API_KEY</code> in backend <code>.env</code> to enable.
+        </p>
+      </section>
     </div>
   );
 }
