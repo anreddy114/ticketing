@@ -13,7 +13,7 @@ export default function AdminUsers() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", password: "", role: "agent" });
 
-  const load = () => api.get("/users").then((r) => setUsers(r.data));
+  const load = () => api.get("/agents").then((r) => setUsers(r.data));
   useEffect(() => { load(); }, []);
 
   const submit = async () => {
@@ -89,6 +89,7 @@ export default function AdminUsers() {
               <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Email</th>
               <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Role</th>
               <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Status</th>
+              <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Presence</th>
               <th className="text-right px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Actions</th>
             </tr>
           </thead>
@@ -110,6 +111,12 @@ export default function AdminUsers() {
                   <button onClick={() => toggleActive(u)} className={`text-xs font-bold uppercase tracking-wider px-2 py-0.5 border rounded-sm ${u.active ? "text-[#16A34A] border-[#16A34A]" : "text-gray-500 border-gray-300"}`}>
                     {u.active ? "Active" : "Inactive"}
                   </button>
+                </td>
+                <td className="px-4 py-3">
+                  <span className={`inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wider px-2 py-0.5 border rounded-sm ${u.online ? "text-[#16A34A] border-[#16A34A] bg-green-50" : "text-gray-500 border-gray-300"}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${u.online ? "bg-[#16A34A]" : "bg-gray-400"}`} />
+                    {u.online ? "Online" : "Offline"}
+                  </span>
                 </td>
                 <td className="px-4 py-3 text-right">
                   <Button size="icon" variant="ghost" onClick={() => remove(u)} className="h-8 w-8 text-[#FF2400]"><Trash size={14} /></Button>

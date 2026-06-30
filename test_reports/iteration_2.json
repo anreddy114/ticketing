@@ -1,0 +1,71 @@
+{
+  "summary": "Backend-only testing of iteration 2 features: presence/heartbeat, all 4 offline redistribution strategies (round_robin, manual_transfer, fallback, stay), SIP webhook (with secret guard), IVR event + agent-availability webhooks, and XLSX reports (admin + agent-scoped + filters). All 24/24 pytest cases passed. Regression on auth, tickets, issue-types also passed.",
+  "tested_scope": ["backend", "auth", "presence", "sip_webhook", "ivr_webhook", "xlsx_reports"],
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/ivr/agent-availability",
+        "issue": "Endpoint requires X-Sip-Secret header (via _require_sip_secret). The system prompt named it as a generic availability check that IVR/frontend could call. If frontend needs to call it (e.g. on a dashboard), it cannot supply the secret. Currently only callable from server-to-server (IVR/Asterisk). Consider relaxing for authenticated app users, OR document that it is server-to-server only. Tested behavior: works correctly with secret.",
+        "priority": "LOW"
+      },
+      {
+        "endpoint": "POST /api/agents/heartbeat",
+        "issue": "Heartbeat updates last_seen but does NOT set online=True. A user must explicitly POST /agents/presence {online:true} once before heartbeats keep them online. This is by design (per code), but frontend must be aware: refreshing the page alone won't mark agent online — they must explicitly toggle.",
+        "priority": "LOW"
+      },
+      {
+        "endpoint": "POST /api/agents/presence",
+        "issue": "Redistribution code path only runs when (payload.online == False) AND (user.online currently True). If admin manually sets a user's online=false in DB and the user then POSTs {online:false} again, no redistribution happens. Acceptable edge case but worth noting.",
+        "priority": "LOW"
+      }
+    ]
+  },
+  "passed": [
+    "GET /api/settings auth required, returns offline_strategy/fallback_assignee_id/sip_webhook_url/ivr_webhook_url/heartbeat_timeout_sec(=120)",
+    "PATCH /api/settings admin succeeds, agent → 403",
+    "GET /api/agents lists users with computed `online` bool (no password_hash, no _id)",
+    "POST /api/agents/heartbeat → {ok:true, at:...}",
+    "POST /api/agents/presence {online:true} → tickets_reassigned=0",
+    "Strategy round_robin: ticket assigned to admin reassigned to agent when admin goes offline (verified by GET /api/tickets/{id})",
+    "Strategy manual_transfer: agent going offline without transfer_to → 400 with message 'Pick a colleague to receive your open tickets…'",
+    "Strategy manual_transfer with valid transfer_to → tickets moved to target",
+    "Strategy fallback: with fallback_assignee_id set via PATCH, going offline moves tickets to that user",
+    "Strategy stay: going offline keeps tickets assigned (tickets_reassigned=0)",
+    "POST /api/sip/incoming-call without X-Sip-Secret → 401",
+    "POST /api/sip/incoming-call with valid header creates ticket (TKT-…), origin_channel='sip_inbound', customer_name populated, assignee set (round-robin online or fallback)",
+    "POST /api/ivr/event persists doc to ivr_events, returns {ok, event:{…}} without _id",
+    "GET /api/ivr/agent-availability returns {online_count, available}",
+    "GET /api/reports/tickets.xlsx (admin) → content-type 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size>1000, starts with PK",
+    "GET /api/reports/tickets.xlsx with filters (status, date_from, date_to) returns valid xlsx",
+    "GET /api/reports/tickets.xlsx (agent) — opened with openpyxl, verified every data row's Assigned To == agent name (no leakage)",
+    "Regression: /api/auth/login admin+agent, /api/auth/me, /api/tickets list, /api/issue-types"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_presence_sip_reports.py",
+    "/app/test_reports/pytest/iteration_2.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Decide whether /api/ivr/agent-availability should accept either SIP secret OR session auth so frontend dashboard can read live availability without exposing the secret",
+    "OPTIONAL: Document that POST /api/agents/heartbeat alone does not mark a user online — they must first toggle via /api/agents/presence",
+    "Real WhatsApp send was triggered during SIP webhook test (expected). No mock used — confirm Meta logs if needed."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1271 lines — consider splitting into modules (routers/presence.py, routers/sip.py, routers/reports.py) for maintainability (>700-line guideline).",
+    "Round-robin counter is keyed only by db.counters._id='rr' globally — fine for low concurrency, but two parallel calls could pick same agent due to no transactional read-after-increment for the agents list (race window between counter update and snapshot). Acceptable for current scale.",
+    "_redistribute_open_tickets calls _round_robin_pick INSIDE the loop per ticket — for an offline-going user with many tickets this is correct (spreads tickets across agents) but issues N counter increments. Optimize if N is large.",
+    "/api/reports/tickets.xlsx fetches up to 20000 rows in-memory and uses openpyxl — fine for small data, may need streaming for very large exports.",
+    "_require_sip_secret returns silently when no secret is configured ('dev mode'). In production a missing env should fail-closed. Consider tightening when ENV != dev.",
+    "Heartbeat endpoint sets last_seen but ignores any stale data on the user record; consider also returning current online state for the client to reconcile."
+  ],
+  "updated_files": [
+    "/app/backend/tests/__init__.py (created)",
+    "/app/backend/tests/test_presence_sip_reports.py (created)"
+  ],
+  "success_rate": {"backend": "100% (24/24)", "frontend": "not tested (per request)"},
+  "test_credentials": "admin@ticketing.com / admin123 ; agent@ticketing.com / agent123 ; SIP secret read from /app/backend/.env",
+  "seed_data_creation": "Test tickets created with TEST_ prefix in title (TEST_RR redistribution, TEST_manual_transfer, TEST_fallback, TEST_stay) — not cleaned up; safe to leave or purge by title prefix. One real SIP-inbound ticket also created (TKT-…) and a real WhatsApp message was attempted (no mock).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All offline strategies verified end-to-end including DB reassignment via GET /api/tickets/{id}. SIP webhook secret guard verified. XLSX content validated by opening workbook and checking Assigned To column for agent role. /api/ivr/agent-availability requires SIP secret — flagged as design concern. Real WhatsApp + SmartPlay integrations were exercised (not mocked)."
+}

@@ -1,8 +1,9 @@
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
+import PresenceToggle from "@/components/PresenceToggle";
 import {
-  House, Ticket as TicketIcon, ChartBar, Tag, UsersThree, SignOut, Plus,
+  House, Ticket as TicketIcon, ChartBar, Tag, UsersThree, SignOut, Plus, GearSix,
 } from "@phosphor-icons/react";
 
 const navItem = ({ isActive }) =>
@@ -48,11 +49,15 @@ export default function AppLayout() {
                   <NavLink to="/admin/users" className={navItem} data-testid="nav-users">
                     <UsersThree size={16} weight="bold" /> Employees
                   </NavLink>
+                  <NavLink to="/admin/settings" className={navItem} data-testid="nav-settings">
+                    <GearSix size={16} weight="bold" /> Settings
+                  </NavLink>
                 </>
               )}
             </nav>
           </div>
           <div className="flex items-center gap-3">
+            <PresenceToggle />
             <Button
               asChild
               className="bg-[#0047AB] hover:bg-[#0033A0] text-white rounded-sm h-9"
@@ -88,6 +93,7 @@ export default function AppLayout() {
             <>
               <NavLink to="/admin/issue-types" className={navItem}>Issue Types</NavLink>
               <NavLink to="/admin/users" className={navItem}>Employees</NavLink>
+              <NavLink to="/admin/settings" className={navItem}>Settings</NavLink>
             </>
           )}
         </nav>

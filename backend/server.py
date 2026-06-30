@@ -68,6 +68,8 @@ def sanitize_user(u: dict) -> dict:
         "name": u["name"],
         "role": u["role"],
         "active": u.get("active", True),
+        "online": bool(u.get("online", False)),
+        "last_seen": u.get("last_seen"),
         "created_at": u.get("created_at"),
     }
 
@@ -167,6 +169,32 @@ class TicketCommentIn(BaseModel):
 class TicketStatusIn(BaseModel):
     status: Literal["open", "in_progress", "closed"]
     note: Optional[str] = ""
+
+
+class PresenceIn(BaseModel):
+    online: bool
+    transfer_to: Optional[str] = None  # user id to reassign open tickets to when going offline
+
+
+class SystemSettingsIn(BaseModel):
+    offline_strategy: Optional[Literal["stay", "round_robin", "fallback", "manual_transfer"]] = None
+    fallback_assignee_id: Optional[str] = None
+
+
+class SipIncomingCallIn(BaseModel):
+    caller_mobile: str
+    call_id: Optional[str] = None
+    did: Optional[str] = None
+    agent_extension: Optional[str] = None
+    agent_busy: Optional[bool] = True
+    notes: Optional[str] = None
+
+
+class IvrEventIn(BaseModel):
+    caller_mobile: str
+    event: str  # e.g. "dtmf", "menu_selected", "transfer", "hangup"
+    payload: Optional[dict] = None
+    call_id: Optional[str] = None
 
 
 # ---------- Startup ----------
@@ -782,6 +810,453 @@ async def reports_summary(_: dict = Depends(get_current_user)):
 @api.get("/")
 async def root():
     return {"service": "Ticketing System API", "status": "ok"}
+
+
+# ====================================================================
+# Agent Presence (online/offline + heartbeat)
+# ====================================================================
+
+HEARTBEAT_TIMEOUT_SEC = int(os.environ.get("AGENT_HEARTBEAT_TIMEOUT_SEC", "120"))
+
+
+def _seconds_since(iso: Optional[str]) -> float:
+    if not iso:
+        return 1e9
+    try:
+        t = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - t).total_seconds()
+    except Exception:
+        return 1e9
+
+
+async def _is_user_online(u: dict) -> bool:
+    if not u.get("online"):
+        return False
+    return _seconds_since(u.get("last_seen")) < HEARTBEAT_TIMEOUT_SEC
+
+
+async def _online_agents(exclude_id: Optional[str] = None) -> List[dict]:
+    users = await db.users.find({"active": True}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    out = []
+    for u in users:
+        if exclude_id and u["id"] == exclude_id:
+            continue
+        if await _is_user_online(u):
+            out.append(u)
+    return out
+
+
+async def _round_robin_pick(exclude_id: Optional[str] = None) -> Optional[dict]:
+    agents = await _online_agents(exclude_id=exclude_id)
+    if not agents:
+        return None
+    counter = await db.counters.find_one_and_update(
+        {"_id": "rr"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True,
+    )
+    idx = (counter["seq"] - 1) % len(agents)
+    return agents[idx]
+
+
+async def _get_settings() -> dict:
+    s = await db.system_settings.find_one({"_id": "global"}, {"_id": 0}) or {}
+    s.setdefault("offline_strategy", os.environ.get("OFFLINE_STRATEGY", "round_robin"))
+    s.setdefault("fallback_assignee_id", None)
+    return s
+
+
+async def _resolve_fallback_user() -> Optional[dict]:
+    settings = await _get_settings()
+    fid = settings.get("fallback_assignee_id")
+    if fid:
+        u = await db.users.find_one({"id": fid, "active": True})
+        if u:
+            return u
+    fallback_email = os.environ.get("FALLBACK_ASSIGNEE_EMAIL", "admin@ticketing.com")
+    return await db.users.find_one({"email": fallback_email, "active": True})
+
+
+async def _redistribute_open_tickets(from_user: dict, strategy: str, transfer_to_id: Optional[str] = None) -> int:
+    """Move open tickets owned by `from_user` to another agent based on strategy."""
+    tickets = await db.tickets.find(
+        {"assigned_to": from_user["id"], "status": {"$in": ["open", "in_progress"]}}
+    ).to_list(2000)
+    if not tickets:
+        return 0
+
+    target: Optional[dict] = None
+    if strategy == "manual_transfer" and transfer_to_id:
+        target = await db.users.find_one({"id": transfer_to_id, "active": True})
+    elif strategy == "fallback":
+        target = await _resolve_fallback_user()
+        if target and target["id"] == from_user["id"]:
+            target = None
+
+    moved = 0
+    for t in tickets:
+        chosen = target
+        if strategy == "round_robin" and not chosen:
+            chosen = await _round_robin_pick(exclude_id=from_user["id"])
+        if not chosen:
+            continue  # leave assigned (no available target)
+        if chosen["id"] == t["assigned_to"]:
+            continue
+        await db.tickets.update_one(
+            {"id": t["id"]},
+            {"$set": {
+                "assigned_to": chosen["id"],
+                "assigned_to_name": chosen["name"],
+                "updated_at": now_iso(),
+            }},
+        )
+        await log_event(
+            t["id"], from_user, "transferred",
+            f"Auto-transferred from {from_user['name']} to {chosen['name']} (agent went offline / {strategy}).",
+            meta={"from": from_user["id"], "to": chosen["id"], "reason": "presence_offline", "strategy": strategy},
+        )
+        moved += 1
+    return moved
+
+
+@api.get("/agents")
+async def list_agents(_: dict = Depends(get_current_user)):
+    """List agents with computed online status."""
+    users = await db.users.find({"active": True}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    out = []
+    for u in users:
+        u["online"] = await _is_user_online(u)
+        out.append(u)
+    return out
+
+
+@api.post("/agents/heartbeat")
+async def heartbeat(user: dict = Depends(get_current_user)):
+    """Frontend pings this every ~60s. Keeps `last_seen` fresh."""
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"last_seen": now_iso()}, "$setOnInsert": {}},
+    )
+    return {"ok": True, "at": now_iso()}
+
+
+@api.post("/agents/presence")
+async def set_presence(payload: PresenceIn, user: dict = Depends(get_current_user)):
+    """Toggle agent online/offline.
+
+    When going offline, redistribute open tickets per system offline_strategy.
+    The frontend may pass `transfer_to` (user id) for the 'manual_transfer' strategy.
+    """
+    moved = 0
+    if not payload.online and user.get("online"):
+        settings = await _get_settings()
+        strategy = settings["offline_strategy"]
+        if strategy == "manual_transfer" and not payload.transfer_to:
+            raise HTTPException(
+                status_code=400,
+                detail="Pick a colleague to receive your open tickets before going offline.",
+            )
+        moved = await _redistribute_open_tickets(user, strategy, payload.transfer_to)
+
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"online": payload.online, "last_seen": now_iso()}},
+    )
+    return {"ok": True, "online": payload.online, "tickets_reassigned": moved}
+
+
+# ====================================================================
+# System Settings (admin)
+# ====================================================================
+
+@api.get("/settings")
+async def get_settings(_: dict = Depends(get_current_user)):
+    s = await _get_settings()
+    return {
+        "offline_strategy": s["offline_strategy"],
+        "fallback_assignee_id": s.get("fallback_assignee_id"),
+        "sip_webhook_url": "/api/sip/incoming-call",
+        "ivr_webhook_url": "/api/ivr/event",
+        "heartbeat_timeout_sec": HEARTBEAT_TIMEOUT_SEC,
+    }
+
+
+@api.patch("/settings")
+async def update_settings(payload: SystemSettingsIn, _: dict = Depends(require_admin)):
+    update = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
+    if not update:
+        raise HTTPException(status_code=400, detail="No changes")
+    await db.system_settings.update_one({"_id": "global"}, {"$set": update}, upsert=True)
+    return await _get_settings()
+
+
+# ====================================================================
+# SIP (Asterisk) — incoming call webhook
+# ====================================================================
+
+def _require_sip_secret(request: Request):
+    expected = os.environ.get("SIP_WEBHOOK_SECRET", "")
+    if not expected:
+        return  # no secret configured → allow (dev mode)
+    got = request.headers.get("X-Sip-Secret") or request.query_params.get("secret")
+    if got != expected:
+        raise HTTPException(status_code=401, detail="Invalid SIP webhook secret")
+
+
+async def _smartplay_lookup_silent(mobile: str) -> Optional[dict]:
+    base = os.environ.get("SMARTPLAY_API_URL", "").rstrip("/")
+    token = os.environ.get("SMARTPLAY_API_TOKEN", "")
+    if not base or not token:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10) as cli:
+            r = await cli.get(
+                f"{base}/api/smart-plays/mobile/{mobile.strip()}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        if r.status_code != 200:
+            return None
+        body = r.json()
+        if str(body.get("status")) != "200" or not body.get("results"):
+            return None
+        res = body["results"]
+        name = f"{(res.get('firstname') or '').strip()} {(res.get('lastname') or '').strip()}".strip() or None
+        return {
+            "mobile": str(res.get("mobile") or mobile),
+            "name": name,
+            "email": res.get("email"),
+            "acc_id": res.get("acc_id"),
+            "expiry_date": res.get("expiry_date"),
+            "partner": res.get("partner"),
+            "partner_code": res.get("partner_code"),
+            "package": res.get("package"),
+        }
+    except Exception:
+        return None
+
+
+@api.post("/sip/incoming-call")
+async def sip_incoming_call(payload: SipIncomingCallIn, request: Request):
+    """Webhook for Asterisk dialplan/AGI.
+
+    Asterisk should POST when an inbound call cannot be answered (no agent
+    available / agent busy / queue timeout). We create a ticket automatically.
+
+    Headers: `X-Sip-Secret: <SIP_WEBHOOK_SECRET>` (set in backend .env)
+    """
+    _require_sip_secret(request)
+
+    # Try to enrich with SmartPlay customer data
+    customer = await _smartplay_lookup_silent(payload.caller_mobile)
+    customer_name = (customer or {}).get("name") or "Unknown Caller"
+
+    # Pick issue type (telephony / general inquiry)
+    issue = (
+        await db.issue_types.find_one({"name": "General Inquiry"})
+        or await db.issue_types.find_one({"active": True})
+    )
+    if not issue:
+        raise HTTPException(status_code=500, detail="No issue types configured")
+
+    # Pick assignee: round-robin among online agents, else fallback
+    assignee = await _round_robin_pick()
+    if not assignee:
+        assignee = await _resolve_fallback_user()
+    if not assignee:
+        raise HTTPException(status_code=500, detail="No assignee available")
+
+    tnum = await next_ticket_number()
+    description_lines = [
+        "Auto-created from missed/queued SIP call.",
+        f"Call ID: {payload.call_id or '—'}",
+        f"DID: {payload.did or '—'}",
+        f"Agent busy: {payload.agent_busy}",
+    ]
+    if payload.notes:
+        description_lines.append(f"Notes: {payload.notes}")
+
+    ticket = {
+        "id": str(uuid.uuid4()),
+        "ticket_number": tnum,
+        "source": "customer",
+        "customer_mobile": (customer or {}).get("mobile") or payload.caller_mobile,
+        "customer_name": customer_name,
+        "customer_email": (customer or {}).get("email"),
+        "customer_package": (customer or {}).get("package"),
+        "customer_expiry": (customer or {}).get("expiry_date"),
+        "customer_partner": (customer or {}).get("partner"),
+        "customer_acc_id": (customer or {}).get("acc_id"),
+        "issue_type_id": issue["id"],
+        "issue_type_name": issue["name"],
+        "title": f"Inbound call from {customer_name} ({payload.caller_mobile})",
+        "description": "\n".join(description_lines),
+        "priority": "high" if payload.agent_busy else "medium",
+        "status": "open",
+        "created_by": "system_sip",
+        "created_by_name": "SIP Webhook",
+        "assigned_to": assignee["id"],
+        "assigned_to_name": assignee["name"],
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "closed_at": None,
+        "origin_channel": "sip_inbound",
+        "origin_call_id": payload.call_id,
+    }
+    await db.tickets.insert_one(ticket)
+
+    actor = {"id": "system_sip", "name": "SIP Webhook"}
+    await log_event(
+        ticket["id"], actor, "created",
+        f"Auto-created from inbound SIP call. Assigned to {assignee['name']}.",
+        meta={"call_id": payload.call_id, "did": payload.did, "agent_busy": payload.agent_busy},
+    )
+
+    # Send WhatsApp acknowledgement (template)
+    await send_whatsapp_message(
+        ticket["customer_mobile"],
+        f"Hi {customer_name}, your call has been logged as ticket {tnum}. Our team will reach out shortly.",
+        ticket["id"], "created",
+        template_params=[customer_name, tnum, issue["name"]],
+    )
+
+    ticket.pop("_id", None)
+    return ticket
+
+
+# ====================================================================
+# IVR webhook
+# ====================================================================
+
+@api.post("/ivr/event")
+async def ivr_event(payload: IvrEventIn, request: Request):
+    """Generic webhook for IVR systems to log customer interactions.
+    Doesn't necessarily create a ticket — just records the touchpoint.
+    """
+    _require_sip_secret(request)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "caller_mobile": payload.caller_mobile,
+        "event": payload.event,
+        "payload": payload.payload or {},
+        "call_id": payload.call_id,
+        "created_at": now_iso(),
+    }
+    await db.ivr_events.insert_one(doc)
+    doc.pop("_id", None)
+    return {"ok": True, "event": doc}
+
+
+@api.get("/ivr/agent-availability")
+async def ivr_agent_availability(request: Request):
+    """IVR can call this to decide whether to queue or send to voicemail/ticket."""
+    _require_sip_secret(request)
+    agents = await _online_agents()
+    return {"online_count": len(agents), "available": len(agents) > 0}
+
+
+# ====================================================================
+# Reports — Excel export
+# ====================================================================
+
+def _parse_dt(s: Optional[str]) -> Optional[datetime]:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+@api.get("/reports/tickets.xlsx")
+async def export_tickets_xlsx(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    status: Optional[str] = None,
+    assigned_to: Optional[str] = None,
+    issue_type_id: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    """Download tickets as Excel. Agents see only their own tickets unless admin."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from io import BytesIO
+    from fastapi.responses import StreamingResponse
+
+    q: dict = {}
+    if status:
+        q["status"] = status
+    if issue_type_id:
+        q["issue_type_id"] = issue_type_id
+    if assigned_to:
+        q["assigned_to"] = assigned_to
+    if user.get("role") != "admin":
+        q["assigned_to"] = user["id"]  # agents export only theirs
+
+    dt_from = _parse_dt(date_from)
+    dt_to = _parse_dt(date_to)
+    if dt_from or dt_to:
+        rng: dict = {}
+        if dt_from:
+            rng["$gte"] = dt_from.isoformat()
+        if dt_to:
+            rng["$lte"] = dt_to.isoformat()
+        q["created_at"] = rng
+
+    tickets = await db.tickets.find(q, {"_id": 0}).sort("created_at", -1).to_list(20000)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Tickets"
+    headers = [
+        "Ticket #", "Title", "Status", "Priority", "Issue Type", "Source",
+        "Customer Name", "Customer Mobile", "Package", "Expiry", "Partner",
+        "Assigned To", "Created By", "Created At", "Closed At",
+    ]
+    ws.append(headers)
+    hdr_fill = PatternFill(start_color="0A0A0A", end_color="0A0A0A", fill_type="solid")
+    hdr_font = Font(bold=True, color="FFFFFF")
+    for col, _ in enumerate(headers, start=1):
+        c = ws.cell(row=1, column=col)
+        c.fill = hdr_fill
+        c.font = hdr_font
+        c.alignment = Alignment(vertical="center")
+
+    for t in tickets:
+        ws.append([
+            t.get("ticket_number"),
+            t.get("title"),
+            t.get("status"),
+            t.get("priority"),
+            t.get("issue_type_name"),
+            t.get("source"),
+            t.get("customer_name") or "",
+            t.get("customer_mobile") or "",
+            t.get("customer_package") or "",
+            t.get("customer_expiry") or "",
+            t.get("customer_partner") or "",
+            t.get("assigned_to_name") or "",
+            t.get("created_by_name") or "",
+            t.get("created_at") or "",
+            t.get("closed_at") or "",
+        ])
+
+    # autosize columns (approx)
+    for col_idx, header in enumerate(headers, start=1):
+        max_len = len(str(header))
+        for row in ws.iter_rows(min_col=col_idx, max_col=col_idx, min_row=2):
+            for cell in row:
+                v = "" if cell.value is None else str(cell.value)
+                if len(v) > max_len:
+                    max_len = len(v)
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = min(max_len + 2, 40)
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"tickets_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 app.include_router(api)

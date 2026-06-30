@@ -10,6 +10,7 @@ import CreateTicket from "@/pages/CreateTicket";
 import Reports from "@/pages/Reports";
 import AdminIssueTypes from "@/pages/AdminIssueTypes";
 import AdminUsers from "@/pages/AdminUsers";
+import AdminSettings from "@/pages/AdminSettings";
 import "@/App.css";
 
 const ProtectedRoute = ({ adminOnly = false }) => {
@@ -37,6 +38,7 @@ function App() {
                 <Route element={<ProtectedRoute adminOnly />}>
                   <Route path="/admin/issue-types" element={<AdminIssueTypes />} />
                   <Route path="/admin/users" element={<AdminUsers />} />
+                  <Route path="/admin/settings" element={<AdminSettings />} />
                 </Route>
               </Route>
             </Route>
