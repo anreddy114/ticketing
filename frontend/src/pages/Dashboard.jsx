@@ -2,7 +2,15 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { StatusBadge, PriorityBadge } from "@/components/Badges";
-import { Ticket, Clock, CheckCircle, WarningCircle } from "@phosphor-icons/react";
+import { Ticket, Clock, CheckCircle, WarningCircle, Trophy, Star } from "@phosphor-icons/react";
+
+const fmtMin = (sec) => {
+  if (!sec || sec < 60) return `${sec || 0}s`;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+};
 
 const StatCard = ({ label, value, icon: Icon, tone, testId, onClick }) => (
   <button
@@ -22,15 +30,18 @@ const StatCard = ({ label, value, icon: Icon, tone, testId, onClick }) => (
 export default function Dashboard() {
   const [summary, setSummary] = useState(null);
   const [recent, setRecent] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([]);
   const navigate = useNavigate();
 
   const load = async () => {
-    const [s, r] = await Promise.all([
+    const [s, r, lb] = await Promise.all([
       api.get("/reports/summary"),
       api.get("/tickets", { params: { mine: true } }),
+      api.get("/reports/today-leaderboard").catch(() => ({ data: [] })),
     ]);
     setSummary(s.data);
     setRecent(r.data.slice(0, 8));
+    setLeaderboard(lb.data || []);
   };
 
   useEffect(() => {
@@ -111,6 +122,81 @@ export default function Dashboard() {
             )}
           </ul>
         </div>
+      </div>
+
+      {/* Today's leaderboard */}
+      <div className="border border-gray-200 rounded-sm" data-testid="today-leaderboard">
+        <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Trophy size={18} weight="fill" className="text-[#D97706]" />
+            <h2 className="font-display font-bold tracking-tight">Today&apos;s Top Performers</h2>
+          </div>
+          <p className="text-[11px] text-gray-500 uppercase tracking-wider">Closed · Rating · Online time</p>
+        </div>
+        {leaderboard.length === 0 ? (
+          <div className="px-5 py-8 text-center text-sm text-gray-500">
+            No activity yet today. Be the first to close a ticket!
+          </div>
+        ) : (
+          <ol className="divide-y divide-gray-100">
+            {leaderboard.map((p, i) => (
+              <li key={p.user_id} className="px-5 py-3 flex items-center gap-4" data-testid={`leaderboard-row-${i}`}>
+                <span
+                  className={`inline-flex items-center justify-center w-7 h-7 rounded-sm font-display font-black text-sm ${
+                    i === 0
+                      ? "bg-[#D97706] text-white"
+                      : i === 1
+                      ? "bg-gray-300 text-gray-800"
+                      : i === 2
+                      ? "bg-[#B45309]/30 text-[#92400E]"
+                      : "bg-gray-100 text-gray-600"
+                  }`}
+                >
+                  {i + 1}
+                </span>
+                {p.photo_url ? (
+                  <img src={p.photo_url} alt={p.name} className="w-8 h-8 rounded-sm object-cover border border-gray-200" />
+                ) : (
+                  <div className="w-8 h-8 rounded-sm bg-gray-100 border border-gray-200 flex items-center justify-center text-[11px] font-bold text-gray-500">
+                    {p.name?.[0]?.toUpperCase() || "?"}
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium truncate">{p.name}</p>
+                    {p.online && (
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-[#16A34A] border border-[#16A34A] bg-green-50 px-1.5 py-0.5 rounded-sm">
+                        Online
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-gray-500 uppercase tracking-wider">{p.role}</p>
+                </div>
+                <div className="hidden sm:flex items-center gap-6 text-sm">
+                  <div className="text-right">
+                    <p className="font-display text-lg font-black tracking-tight">{p.closed_today}</p>
+                    <p className="text-[10px] text-gray-500 uppercase tracking-wider">Closed</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-display text-lg font-black tracking-tight flex items-center justify-end gap-1">
+                      {p.rating_avg ? p.rating_avg.toFixed(1) : "—"}
+                      {p.rating_avg && <Star size={12} weight="fill" className="text-[#F59E0B]" />}
+                    </p>
+                    <p className="text-[10px] text-gray-500 uppercase tracking-wider">Rating ({p.rating_count || 0})</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-display text-lg font-black tracking-tight font-mono">{fmtMin(p.online_today_sec)}</p>
+                    <p className="text-[10px] text-gray-500 uppercase tracking-wider">Online</p>
+                  </div>
+                </div>
+                <div className="sm:hidden text-right text-xs font-mono">
+                  <p><b>{p.closed_today}</b> closed</p>
+                  <p className="text-gray-500">{fmtMin(p.online_today_sec)} online</p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
       </div>
     </div>
   );

@@ -36,6 +36,7 @@ export default function AdminSessions() {
   const [sessions, setSessions] = useState([]);
   const [users, setUsers] = useState([]);
   const [filter, setFilter] = useState("all");
+  const [summary, setSummary] = useState([]);
 
   const [period, setPeriod] = useState("daily");
   const [customFrom, setCustomFrom] = useState("");
@@ -46,10 +47,11 @@ export default function AdminSessions() {
     const params = {};
     if (filter !== "all") params.user_id = filter;
     api.get("/agents/sessions", { params }).then((r) => setSessions(r.data));
+    api.get("/admin/presence-summary", { params }).then((r) => setSummary(r.data)).catch(() => {});
   };
 
   useEffect(() => { api.get("/users").then((r) => setUsers(r.data)); }, []);
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [filter]);
+  useEffect(() => { load(); const t = setInterval(load, 30_000); return () => clearInterval(t); }, [filter]);
 
   const generate = async () => {
     if (period === "custom" && !customFrom && !customTo) {
@@ -97,7 +99,7 @@ export default function AdminSessions() {
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-gray-500 font-bold">Admin</p>
           <h1 className="font-display text-3xl sm:text-4xl font-black tracking-tight">Login Sessions</h1>
-          <p className="text-sm text-gray-500 mt-1">Login/logout audit with IP, browser &amp; duration.</p>
+          <p className="text-sm text-gray-500 mt-1">Online-time totals, login/logout audit (IP, browser &amp; duration).</p>
         </div>
         <div className="w-56">
           <Select value={filter} onValueChange={setFilter}>
@@ -109,6 +111,52 @@ export default function AdminSessions() {
           </Select>
         </div>
       </div>
+
+      {/* Online time summary (per-employee aggregates) */}
+      <section className="border border-gray-200 rounded-sm overflow-hidden" data-testid="online-time-summary">
+        <div className="px-4 py-3 border-b border-gray-200 bg-gray-50/60 flex items-center justify-between">
+          <div>
+            <p className="text-[11px] uppercase tracking-wider text-gray-500 font-bold">Productivity</p>
+            <h2 className="font-display font-bold tracking-tight">Online time by employee</h2>
+          </div>
+          <p className="text-[11px] text-gray-500">Auto-refreshes every 30s</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-200 bg-white">
+                <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Employee</th>
+                <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Role</th>
+                <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">State</th>
+                <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Sessions</th>
+                <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Today online</th>
+                <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Total online</th>
+                <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Last online</th>
+              </tr>
+            </thead>
+            <tbody data-testid="online-time-summary-rows">
+              {summary.length === 0 && (
+                <tr><td colSpan="7" className="px-4 py-8 text-center text-gray-500 text-sm">No online activity yet.</td></tr>
+              )}
+              {summary.map((s) => (
+                <tr key={s.user_id} className="border-b border-gray-100 hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium">{s.name}</td>
+                  <td className="px-4 py-3 text-xs uppercase tracking-wider text-gray-500">{s.role}</td>
+                  <td className="px-4 py-3">
+                    <span className={`text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 border rounded-sm ${s.currently_online ? "text-[#16A34A] border-[#16A34A] bg-green-50" : "text-gray-500 border-gray-300"}`}>
+                      {s.currently_online ? "Online" : "Offline"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs">{s.sessions_count}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{fmtSec(s.today_online_sec)}</td>
+                  <td className="px-4 py-3 font-mono text-xs font-bold">{fmtSec(s.total_online_sec)}</td>
+                  <td className="px-4 py-3 text-xs text-gray-600">{fmtDt(s.last_online_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       {/* Report builder */}
       <section className="border border-gray-200 rounded-sm p-4 space-y-3" data-testid="sessions-report-builder">

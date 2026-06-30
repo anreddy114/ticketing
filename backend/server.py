@@ -1406,6 +1406,165 @@ async def list_sessions(
     return sessions
 
 
+@api.get("/admin/presence-summary")
+async def admin_presence_summary(
+    user_id: Optional[str] = None,
+    _: dict = Depends(require_admin),
+):
+    """Admin-only: per-employee online-time aggregates.
+
+    Returns: name, role, currently_online, sessions_count, today_online_sec,
+    total_online_sec, last_online_at.
+    Optional user_id filter.
+    """
+    now_t = datetime.now(timezone.utc)
+    today_start = datetime(now_t.year, now_t.month, now_t.day, tzinfo=timezone.utc)
+    user_q: dict = {"active": True}
+    if user_id:
+        user_q["id"] = user_id
+    users = await db.users.find(user_q, {"_id": 0, "password_hash": 0}).to_list(1000)
+    rows = []
+    for u in users:
+        uid = u["id"]
+        sessions = await db.presence_sessions.find({"user_id": uid}, {"_id": 0}).to_list(5000)
+        total = 0
+        today = 0
+        last_at = None
+        current = None
+        for s in sessions:
+            try:
+                t0 = datetime.fromisoformat(s["online_from"].replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if s.get("duration_sec") is not None and s.get("online_until"):
+                total += s["duration_sec"]
+                try:
+                    end = datetime.fromisoformat(s["online_until"].replace("Z", "+00:00"))
+                    if end >= today_start:
+                        # count only the slice within today
+                        slice_start = max(t0, today_start)
+                        today += int((end - slice_start).total_seconds())
+                    if last_at is None or s["online_until"] > last_at:
+                        last_at = s["online_until"]
+                except Exception:
+                    pass
+            elif not s.get("online_until"):
+                # currently open
+                sec = int((now_t - t0).total_seconds())
+                current = {"online_from": s["online_from"], "duration_sec": sec}
+                total += sec
+                slice_start = max(t0, today_start)
+                today += int((now_t - slice_start).total_seconds())
+                if last_at is None or s["online_from"] > last_at:
+                    last_at = s["online_from"]
+        rows.append({
+            "user_id": uid,
+            "name": u["name"],
+            "email": u["email"],
+            "role": u["role"],
+            "photo_url": u.get("photo_url"),
+            "currently_online": bool(u.get("online")),
+            "sessions_count": len(sessions),
+            "today_online_sec": today,
+            "total_online_sec": total,
+            "last_online_at": last_at,
+            "current_session": current,
+        })
+    # Sort: currently online first, then by total time desc
+    rows.sort(key=lambda r: (not r["currently_online"], -r["total_online_sec"]))
+    return rows
+
+
+@api.get("/admin/presence-sessions")
+async def admin_presence_sessions(
+    user_id: Optional[str] = None,
+    limit: int = 200,
+    _: dict = Depends(require_admin),
+):
+    """Admin-only: raw presence_session rows with user_name joined."""
+    q: dict = {}
+    if user_id:
+        q["user_id"] = user_id
+    rows = await db.presence_sessions.find(q, {"_id": 0}).sort("online_from", -1).to_list(limit)
+    # Join user name
+    user_ids = list({r["user_id"] for r in rows if r.get("user_id")})
+    users = await db.users.find({"id": {"$in": user_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(1000)
+    name_map = {u["id"]: u["name"] for u in users}
+    now_t = datetime.now(timezone.utc)
+    for r in rows:
+        r["user_name"] = name_map.get(r.get("user_id"), "—")
+        if not r.get("online_until"):
+            try:
+                t0 = datetime.fromisoformat(r["online_from"].replace("Z", "+00:00"))
+                r["duration_sec"] = int((now_t - t0).total_seconds())
+                r["active"] = True
+            except Exception:
+                r["active"] = True
+        else:
+            r["active"] = False
+    return rows
+
+
+@api.get("/reports/today-leaderboard")
+async def reports_today_leaderboard(user: dict = Depends(get_current_user)):
+    """Today's top performers for the dashboard widget.
+
+    Returns up to 5 agents ranked by: tickets closed today, then average
+    rating, then minutes online today. Available to all authenticated users.
+    """
+    now_t = datetime.now(timezone.utc)
+    today_start = datetime(now_t.year, now_t.month, now_t.day, tzinfo=timezone.utc)
+    today_iso = today_start.isoformat()
+    users = await db.users.find({"active": True}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    rows = []
+    for u in users:
+        if u.get("role") not in ("agent", "admin"):
+            continue
+        uid = u["id"]
+        closed_today = await db.tickets.count_documents({
+            "assigned_to": uid,
+            "status": "closed",
+            "closed_at": {"$gte": today_iso},
+        })
+        # online time today
+        sessions = await db.presence_sessions.find({"user_id": uid}, {"_id": 0}).to_list(5000)
+        today_sec = 0
+        for s in sessions:
+            try:
+                t0 = datetime.fromisoformat(s["online_from"].replace("Z", "+00:00"))
+            except Exception:
+                continue
+            end_dt = now_t
+            if s.get("online_until"):
+                try:
+                    end_dt = datetime.fromisoformat(s["online_until"].replace("Z", "+00:00"))
+                except Exception:
+                    continue
+            if end_dt < today_start:
+                continue
+            slice_start = max(t0, today_start)
+            today_sec += int((end_dt - slice_start).total_seconds())
+        rows.append({
+            "user_id": uid,
+            "name": u["name"],
+            "role": u["role"],
+            "photo_url": u.get("photo_url"),
+            "online": bool(u.get("online")),
+            "closed_today": closed_today,
+            "rating_avg": u.get("rating_avg"),
+            "rating_count": u.get("rating_count", 0),
+            "online_today_sec": today_sec,
+        })
+    rows.sort(key=lambda r: (
+        -r["closed_today"],
+        -(r["rating_avg"] or 0),
+        -r["online_today_sec"],
+    ))
+    # Only return agents/admins that have ANY activity today (closed or online)
+    active_rows = [r for r in rows if r["closed_today"] > 0 or r["online_today_sec"] > 0 or r["online"]]
+    return active_rows[:5] if active_rows else rows[:5]
+
+
 # ====================================================================
 # Public website API — for customer-facing site to create tickets
 # ====================================================================
