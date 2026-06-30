@@ -20,12 +20,7 @@ export default function AppLayout() {
   const navigate = useNavigate();
 
   const handleLogout = async () => {
-    const info = await logout();
-    if (info?.duration_text) {
-      toast.success("Logged out", { description: `You were logged in for ${info.duration_text}` });
-    } else {
-      toast.message("Logged out");
-    }
+    await logout();
     navigate("/login", { replace: true });
   };
 

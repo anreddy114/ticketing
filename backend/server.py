@@ -295,17 +295,17 @@ async def login(payload: LoginIn, request: Request, response: Response):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.get("active", True):
         raise HTTPException(status_code=403, detail="Account is inactive")
-    # Fetch previous session info to show on welcome
-    prev = await db.agent_sessions.find_one(
-        {"user_id": user["id"], "logout_at": {"$ne": None}},
-        sort=[("logout_at", -1)],
+    # Pick the most recent CLOSED online-session for this user (presence-based)
+    prev_online = await db.presence_sessions.find_one(
+        {"user_id": user["id"], "online_until": {"$ne": None}},
+        sort=[("online_until", -1)],
     )
-    previous_session = None
-    if prev:
-        previous_session = {
-            "login_at": prev.get("login_at"),
-            "logout_at": prev.get("logout_at"),
-            "duration_sec": prev.get("duration_sec"),
+    previous_online_session = None
+    if prev_online:
+        previous_online_session = {
+            "online_from": prev_online.get("online_from"),
+            "online_until": prev_online.get("online_until"),
+            "duration_sec": prev_online.get("duration_sec"),
         }
 
     token = create_access_token(user["id"], user["email"], user["role"])
@@ -313,11 +313,9 @@ async def login(payload: LoginIn, request: Request, response: Response):
         "access_token", token, httponly=True, secure=False, samesite="lax",
         max_age=12 * 3600, path="/",
     )
-    # Capture client metadata
     fwd = request.headers.get("x-forwarded-for") or ""
     ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")
     ua = request.headers.get("user-agent", "")
-    # Start agent session
     session_id = str(uuid.uuid4())
     await db.agent_sessions.insert_one({
         "id": session_id,
@@ -336,41 +334,30 @@ async def login(payload: LoginIn, request: Request, response: Response):
     return {
         "token": token,
         "user": sanitize_user(user),
-        "previous_session": previous_session,
+        "previous_online_session": previous_online_session,
     }
 
 
 @api.post("/auth/logout")
 async def logout(response: Response, user: dict = Depends(get_current_user)):
     response.delete_cookie("access_token", path="/")
-    # End agent session
-    duration_sec = None
-    login_at = None
-    logout_at = None
     sid = user.get("current_session_id")
     if sid:
         sess = await db.agent_sessions.find_one({"id": sid})
         if sess and not sess.get("logout_at"):
             t0 = datetime.fromisoformat(sess["login_at"].replace("Z", "+00:00"))
             t1 = datetime.now(timezone.utc)
-            duration_sec = int((t1 - t0).total_seconds())
-            login_at = sess["login_at"]
-            logout_at = t1.isoformat()
             await db.agent_sessions.update_one(
                 {"id": sid},
-                {"$set": {"logout_at": logout_at, "duration_sec": duration_sec}},
+                {"$set": {"logout_at": t1.isoformat(), "duration_sec": int((t1 - t0).total_seconds())}},
             )
-    # Mark offline (but do NOT redistribute — they may log back in shortly)
+    # Close any active presence session for this user too
+    await _close_presence_session(user["id"])
     await db.users.update_one(
         {"id": user["id"]},
-        {"$set": {"online": False, "current_session_id": None}},
+        {"$set": {"online": False, "current_session_id": None, "current_online_from": None}},
     )
-    return {
-        "ok": True,
-        "session_duration_sec": duration_sec,
-        "login_at": login_at,
-        "logout_at": logout_at,
-    }
+    return {"ok": True}
 
 
 @api.get("/auth/me")
@@ -1236,16 +1223,58 @@ async def heartbeat(user: dict = Depends(get_current_user)):
     return {"ok": True, "at": now_iso()}
 
 
+async def _open_presence_session(user: dict):
+    """Start a new presence (online) session if not already open."""
+    existing = await db.presence_sessions.find_one({"user_id": user["id"], "online_until": None})
+    if existing:
+        return existing
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "user_name": user["name"],
+        "online_from": now_iso(),
+        "online_until": None,
+        "duration_sec": None,
+    }
+    await db.presence_sessions.insert_one(doc)
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"current_online_from": doc["online_from"]}},
+    )
+    return doc
+
+
+async def _close_presence_session(user_id: str) -> Optional[dict]:
+    """Close any open presence session for the user, returning the closed doc."""
+    open_sess = await db.presence_sessions.find_one({"user_id": user_id, "online_until": None})
+    if not open_sess:
+        return None
+    try:
+        t0 = datetime.fromisoformat(open_sess["online_from"].replace("Z", "+00:00"))
+    except Exception:
+        t0 = datetime.now(timezone.utc)
+    t1 = datetime.now(timezone.utc)
+    duration_sec = max(0, int((t1 - t0).total_seconds()))
+    await db.presence_sessions.update_one(
+        {"id": open_sess["id"]},
+        {"$set": {"online_until": t1.isoformat(), "duration_sec": duration_sec}},
+    )
+    open_sess["online_until"] = t1.isoformat()
+    open_sess["duration_sec"] = duration_sec
+    open_sess.pop("_id", None)
+    return open_sess
+
+
 @api.post("/agents/presence")
 async def set_presence(payload: PresenceIn, user: dict = Depends(get_current_user)):
     """Toggle agent online/offline.
 
+    Opens/closes a presence_session — this is the canonical "agent time" record.
     When going offline, redistribute open tickets per system offline_strategy.
-    The frontend may pass `transfer_to` (user id) for the 'manual_transfer' strategy.
-    Also logs an admin notification.
     """
     moved = 0
     previously_online = bool(user.get("online"))
+    closed_session = None
     if not payload.online and previously_online:
         settings = await _get_settings()
         strategy = settings["offline_strategy"]
@@ -1256,12 +1285,16 @@ async def set_presence(payload: PresenceIn, user: dict = Depends(get_current_use
             )
         moved = await _redistribute_open_tickets(user, strategy, payload.transfer_to)
 
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$set": {"online": payload.online, "last_seen": now_iso()}},
-    )
+    if payload.online and not previously_online:
+        await _open_presence_session(user)
+    elif not payload.online and previously_online:
+        closed_session = await _close_presence_session(user["id"])
 
-    # Drop an admin notification (only when state actually changes)
+    update_set = {"online": payload.online, "last_seen": now_iso()}
+    if not payload.online:
+        update_set["current_online_from"] = None
+    await db.users.update_one({"id": user["id"]}, {"$set": update_set})
+
     if previously_online != payload.online:
         notif = {
             "id": str(uuid.uuid4()),
@@ -1276,7 +1309,46 @@ async def set_presence(payload: PresenceIn, user: dict = Depends(get_current_use
         }
         await db.notifications.insert_one(notif)
 
-    return {"ok": True, "online": payload.online, "tickets_reassigned": moved}
+    return {
+        "ok": True,
+        "online": payload.online,
+        "tickets_reassigned": moved,
+        "closed_session": closed_session,  # contains duration_sec when going offline
+    }
+
+
+@api.get("/agents/online-time")
+async def agents_online_time(user: dict = Depends(get_current_user)):
+    """Total online time for the current user (today + all-time + current open session)."""
+    now_t = datetime.now(timezone.utc)
+    today_start = datetime(now_t.year, now_t.month, now_t.day, tzinfo=timezone.utc)
+    sessions = await db.presence_sessions.find({"user_id": user["id"]}, {"_id": 0}).to_list(5000)
+    total = 0
+    today = 0
+    current = None
+    for s in sessions:
+        if s.get("duration_sec"):
+            total += s["duration_sec"]
+            try:
+                end = datetime.fromisoformat(s["online_until"].replace("Z", "+00:00"))
+                if end >= today_start:
+                    today += s["duration_sec"]
+            except Exception:
+                pass
+        elif not s.get("online_until"):
+            # currently open
+            try:
+                t0 = datetime.fromisoformat(s["online_from"].replace("Z", "+00:00"))
+                sec = int((now_t - t0).total_seconds())
+                current = {"online_from": s["online_from"], "duration_sec": sec}
+                total += sec
+                if t0 >= today_start:
+                    today += sec
+                else:
+                    today += int((now_t - today_start).total_seconds())
+            except Exception:
+                pass
+    return {"total_sec": total, "today_sec": today, "current_session": current}
 
 
 # ====================================================================

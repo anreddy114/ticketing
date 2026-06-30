@@ -9,11 +9,12 @@ import { Ticket as TicketIcon, SignIn } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 export default function Login() {
-  const { user, login, lastLogout, setLastLogout } = useAuth();
+  const { user, login, previousOnline, setPreviousOnline } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [welcome, setWelcome] = useState(null);
 
   if (user) return <Navigate to="/" replace />;
 
@@ -22,16 +23,14 @@ export default function Login() {
     setBusy(true);
     try {
       const res = await login(email.trim().toLowerCase(), password);
-      if (res.previous_session?.duration_sec) {
-        const sec = res.previous_session.duration_sec;
-        const h = Math.floor(sec / 3600);
-        const m = Math.floor((sec % 3600) / 60);
-        const txt = h > 0 ? `${h}h ${m}m` : `${m}m`;
-        toast.success("Welcome back", { description: `Your last session lasted ${txt}` });
+      const prev = res.previous_online_session;
+      if (prev?.duration_text) {
+        setWelcome(prev);
+        toast.success("Welcome back", { description: `You were online for ${prev.duration_text} last session` });
       } else {
         toast.success("Welcome back");
       }
-      setLastLogout && setLastLogout(null);
+      setPreviousOnline && setPreviousOnline(null);
       navigate("/", { replace: true });
     } catch (err) {
       toast.error(errorMessage(err, "Login failed"));
@@ -39,6 +38,8 @@ export default function Login() {
       setBusy(false);
     }
   };
+
+  const banner = welcome || previousOnline;
 
   return (
     <div className="min-h-screen grid md:grid-cols-2">
@@ -78,15 +79,15 @@ export default function Login() {
             <p className="text-sm text-gray-500">Use your employee credentials to continue.</p>
           </div>
 
-          {lastLogout?.duration_text && (
-            <div className="border border-[#16A34A] bg-green-50 rounded-sm p-3 text-xs space-y-1" data-testid="logout-summary-banner">
-              <p className="font-bold uppercase tracking-wider text-[#16A34A]">Signed out</p>
+          {banner?.duration_text && (
+            <div className="border border-[#0047AB] bg-blue-50/60 rounded-sm p-3 text-xs space-y-1" data-testid="online-time-banner">
+              <p className="font-bold uppercase tracking-wider text-[#0047AB]">Last online session</p>
               <p className="text-gray-700">
-                You were logged in for <b>{lastLogout.duration_text}</b>.
+                You were online for <b>{banner.duration_text}</b>.
               </p>
-              {lastLogout.login_at && (
+              {banner.online_from && (
                 <p className="text-[10px] text-gray-500">
-                  {new Date(lastLogout.login_at).toLocaleString()} → {new Date(lastLogout.logout_at).toLocaleString()}
+                  {new Date(banner.online_from).toLocaleString()} → {banner.online_until ? new Date(banner.online_until).toLocaleString() : "ongoing"}
                 </p>
               )}
             </div>
@@ -134,6 +135,12 @@ export default function Login() {
             <p>admin@ticketing.com / admin123</p>
             <p>agent@ticketing.com / agent123</p>
           </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+div>
         </form>
       </div>
     </div>

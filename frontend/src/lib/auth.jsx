@@ -16,8 +16,7 @@ const fmtDuration = (sec) => {
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [previousSession, setPreviousSession] = useState(null);
-  const [lastLogout, setLastLogout] = useState(null);
+  const [previousOnline, setPreviousOnline] = useState(null);
 
   const fetchMe = async () => {
     if (!getToken()) {
@@ -36,40 +35,32 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  useEffect(() => {
-    fetchMe();
-  }, []);
+  useEffect(() => { fetchMe(); }, []);
 
   const login = async (email, password) => {
     const { data } = await api.post("/auth/login", { email, password });
     setToken(data.token);
     setUser(data.user);
-    setPreviousSession(data.previous_session ? { ...data.previous_session, duration_text: fmtDuration(data.previous_session.duration_sec) } : null);
-    return { user: data.user, previous_session: data.previous_session };
+    const prev = data.previous_online_session
+      ? { ...data.previous_online_session, duration_text: fmtDuration(data.previous_online_session.duration_sec) }
+      : null;
+    setPreviousOnline(prev);
+    return { user: data.user, previous_online_session: prev };
   };
 
   const logout = async () => {
-    let info = null;
-    try {
-      const { data } = await api.post("/auth/logout");
-      info = {
-        duration_sec: data.session_duration_sec,
-        duration_text: fmtDuration(data.session_duration_sec),
-        login_at: data.login_at,
-        logout_at: data.logout_at,
-      };
-    } catch { /* ignore */ }
+    try { await api.post("/auth/logout"); } catch { /* ignore */ }
     clearToken();
     setUser(null);
-    setLastLogout(info);
-    return info;
+    setPreviousOnline(null);
   };
 
   return (
-    <AuthCtx.Provider value={{ user, loading, login, logout, refresh: fetchMe, previousSession, lastLogout, setLastLogout }}>
+    <AuthCtx.Provider value={{ user, loading, login, logout, refresh: fetchMe, previousOnline, setPreviousOnline }}>
       {children}
     </AuthCtx.Provider>
   );
 };
 
 export const useAuth = () => useContext(AuthCtx);
+export { fmtDuration };
