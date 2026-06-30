@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { api, API, getToken } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { DownloadSimple, FileXls } from "@phosphor-icons/react";
+import { DownloadSimple, FileXls, Trophy } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const Bar = ({ name, count, max }) => {
@@ -21,15 +22,19 @@ const Bar = ({ name, count, max }) => {
 };
 
 export default function Reports() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [data, setData] = useState(null);
   const [issueTypes, setIssueTypes] = useState([]);
   const [users, setUsers] = useState([]);
+  const [leaderboard, setLeaderboard] = useState(null);
 
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [statusF, setStatusF] = useState("all");
   const [issueTypeF, setIssueTypeF] = useState("all");
   const [assigneeF, setAssigneeF] = useState("all");
+  const [slaHours, setSlaHours] = useState(24);
   const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
@@ -37,6 +42,19 @@ export default function Reports() {
     api.get("/issue-types").then((r) => setIssueTypes(r.data));
     api.get("/users").then((r) => setUsers(r.data));
   }, []);
+
+  const loadLeaderboard = () => {
+    if (!isAdmin) return;
+    const params = { sla_hours: slaHours };
+    if (dateFrom) params.date_from = new Date(dateFrom).toISOString();
+    if (dateTo) params.date_to = new Date(`${dateTo}T23:59:59`).toISOString();
+    api.get("/reports/leaderboard", { params }).then((r) => setLeaderboard(r.data));
+  };
+
+  useEffect(() => {
+    loadLeaderboard();
+    // eslint-disable-next-line
+  }, [isAdmin, dateFrom, dateTo, slaHours]);
 
   const buildParams = () => {
     const p = new URLSearchParams();
@@ -171,6 +189,94 @@ export default function Reports() {
         <DownloadSimple size={12} weight="bold" />
         Agents export only their own tickets · Admins export everything · Filters apply to the Excel export.
       </p>
+
+      {isAdmin && leaderboard && (
+        <section className="space-y-3" data-testid="reports-leaderboard">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Trophy size={20} weight="duotone" className="text-[#0047AB]" />
+              <h2 className="font-display text-2xl font-black tracking-tight">Team Performance</h2>
+            </div>
+            <div className="flex items-end gap-2">
+              <div className="space-y-1">
+                <Label className="text-[11px] uppercase tracking-wider">SLA hours</Label>
+                <Input
+                  type="number" min="1" max="240"
+                  value={slaHours}
+                  onChange={(e) => setSlaHours(Number(e.target.value) || 24)}
+                  className="w-24"
+                  data-testid="reports-sla-hours"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="border border-gray-200 rounded-sm overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200 bg-gray-50/60">
+                  <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Rank</th>
+                  <th className="text-left px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Employee</th>
+                  <th className="text-right px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Total</th>
+                  <th className="text-right px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Open</th>
+                  <th className="text-right px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">In&nbsp;Progress</th>
+                  <th className="text-right px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Closed</th>
+                  <th className="text-right px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Avg&nbsp;Resolve</th>
+                  <th className="text-right px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Logged</th>
+                  <th className="text-right px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">Closed/hr</th>
+                  <th className="text-right px-4 py-2.5 text-[11px] uppercase tracking-wider font-bold text-gray-500">SLA&nbsp;breach</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leaderboard.rows.length === 0 && (
+                  <tr><td colSpan="10" className="px-4 py-8 text-center text-gray-500 text-sm">No agents yet.</td></tr>
+                )}
+                {leaderboard.rows.map((r, i) => (
+                  <tr key={r.user_id} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="px-4 py-3 font-mono text-xs">
+                      <span className={`inline-flex items-center justify-center w-6 h-6 rounded-sm text-xs font-bold ${
+                        i === 0 ? "bg-[#0047AB] text-white" : i < 3 ? "bg-gray-200 text-gray-800" : "text-gray-500"
+                      }`}>{i + 1}</span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <span className={`w-1.5 h-1.5 rounded-full ${r.online ? "bg-[#16A34A]" : "bg-gray-300"}`} />
+                        <span className="font-medium">{r.name}</span>
+                        <span className="text-[10px] uppercase tracking-wider text-gray-400">{r.role}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-xs">{r.total}</td>
+                    <td className="px-4 py-3 text-right font-mono text-xs text-[#FF2400]">{r.open}</td>
+                    <td className="px-4 py-3 text-right font-mono text-xs text-[#0EA5E9]">{r.in_progress}</td>
+                    <td className="px-4 py-3 text-right font-mono text-xs text-[#16A34A] font-bold">{r.closed}</td>
+                    <td className="px-4 py-3 text-right font-mono text-xs">{fmtDuration(r.avg_resolution_sec)}</td>
+                    <td className="px-4 py-3 text-right font-mono text-xs">{fmtDuration(r.logged_sec)}</td>
+                    <td className="px-4 py-3 text-right font-mono text-xs">{r.closed_per_hour ?? "—"}</td>
+                    <td className="px-4 py-3 text-right">
+                      <span className={`font-mono text-xs ${r.sla_breaches > 0 ? "text-[#FF2400] font-bold" : "text-gray-400"}`}>
+                        {r.sla_breaches}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[11px] text-gray-400">
+            SLA threshold: <b>{leaderboard.sla_hours}h</b>. A ticket counts as a breach if it stayed open longer than the threshold, or was closed after exceeding it.
+            Ranked by closed-count → closed/hour → total tickets.
+          </p>
+        </section>
+      )}
     </div>
   );
+}
+
+function fmtDuration(sec) {
+  if (sec == null) return "—";
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${sec}s`;
 }

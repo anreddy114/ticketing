@@ -855,6 +855,114 @@ async def reports_summary(user: dict = Depends(get_current_user)):
     }
 
 
+@api.get("/reports/leaderboard")
+async def reports_leaderboard(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sla_hours: int = 24,
+    _: dict = Depends(require_admin),
+):
+    """Per-agent productivity leaderboard.
+    Computes: assigned/open/in_progress/closed counts, avg resolution time,
+    total logged hours, tickets-closed-per-hour, and SLA breaches.
+    """
+    dt_from = _parse_dt(date_from)
+    dt_to = _parse_dt(date_to)
+    ticket_match: dict = {}
+    if dt_from or dt_to:
+        rng: dict = {}
+        if dt_from:
+            rng["$gte"] = dt_from.isoformat()
+        if dt_to:
+            rng["$lte"] = dt_to.isoformat()
+        ticket_match["created_at"] = rng
+
+    users = await db.users.find({"active": True}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    now_t = datetime.now(timezone.utc)
+    sla_threshold_sec = sla_hours * 3600
+    rows = []
+    for u in users:
+        uid = u["id"]
+        umatch = {**ticket_match, "assigned_to": uid}
+        all_t = await db.tickets.find(umatch, {"_id": 0}).to_list(5000)
+        total = len(all_t)
+        open_c = sum(1 for t in all_t if t["status"] == "open")
+        in_prog = sum(1 for t in all_t if t["status"] == "in_progress")
+        closed_list = [t for t in all_t if t["status"] == "closed"]
+        closed = len(closed_list)
+
+        # Avg resolution (closed only)
+        res_secs = []
+        for t in closed_list:
+            try:
+                t0 = datetime.fromisoformat(t["created_at"].replace("Z", "+00:00"))
+                t1 = datetime.fromisoformat(t["closed_at"].replace("Z", "+00:00"))
+                res_secs.append((t1 - t0).total_seconds())
+            except Exception:
+                pass
+        avg_res = (sum(res_secs) / len(res_secs)) if res_secs else None
+
+        # Logged time from sessions
+        sess_match: dict = {"user_id": uid}
+        if dt_from or dt_to:
+            rng: dict = {}
+            if dt_from:
+                rng["$gte"] = dt_from.isoformat()
+            if dt_to:
+                rng["$lte"] = dt_to.isoformat()
+            sess_match["login_at"] = rng
+        sessions = await db.agent_sessions.find(sess_match, {"_id": 0}).to_list(2000)
+        logged = 0
+        for s in sessions:
+            if s.get("duration_sec") is not None:
+                logged += s["duration_sec"]
+            else:
+                try:
+                    t0 = datetime.fromisoformat(s["login_at"].replace("Z", "+00:00"))
+                    logged += int((now_t - t0).total_seconds())
+                except Exception:
+                    pass
+
+        # SLA breaches: open or in_progress past threshold; closed but resolution > threshold
+        breaches = 0
+        for t in all_t:
+            try:
+                t0 = datetime.fromisoformat(t["created_at"].replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if t["status"] in ("open", "in_progress"):
+                if (now_t - t0).total_seconds() > sla_threshold_sec:
+                    breaches += 1
+            elif t["status"] == "closed" and t.get("closed_at"):
+                try:
+                    t1 = datetime.fromisoformat(t["closed_at"].replace("Z", "+00:00"))
+                    if (t1 - t0).total_seconds() > sla_threshold_sec:
+                        breaches += 1
+                except Exception:
+                    pass
+
+        hours = logged / 3600 if logged else 0
+        per_hour = (closed / hours) if hours > 0 else None
+        rows.append({
+            "user_id": uid,
+            "name": u["name"],
+            "role": u["role"],
+            "online": bool(u.get("online")),
+            "total": total,
+            "open": open_c,
+            "in_progress": in_prog,
+            "closed": closed,
+            "avg_resolution_sec": int(avg_res) if avg_res is not None else None,
+            "logged_sec": logged,
+            "closed_per_hour": round(per_hour, 2) if per_hour is not None else None,
+            "sla_breaches": breaches,
+        })
+
+    # rank by closed desc, then closed_per_hour desc, then total desc
+    rows.sort(key=lambda r: (-r["closed"], -(r["closed_per_hour"] or 0), -r["total"]))
+    return {"sla_hours": sla_hours, "rows": rows}
+
+
 @api.get("/")
 async def root():
     return {"service": "Ticketing System API", "status": "ok"}
