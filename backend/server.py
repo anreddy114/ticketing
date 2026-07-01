@@ -510,17 +510,26 @@ def _format_msisdn(mobile: str) -> str:
     return digits
 
 
-async def send_whatsapp_message(mobile: str, message: str, ticket_id: str, kind: str, template_params: Optional[List[str]] = None):
+async def send_whatsapp_message(
+    mobile: str,
+    message: str,
+    ticket_id: str,
+    kind: str,
+    template_params: Optional[List[str]] = None,
+    button_url_params: Optional[List[str]] = None,
+):
     """Send a WhatsApp message via Meta Cloud API.
 
-    For "created" and "closed" kinds we send an approved **template** (Meta requires
-    a template for business-initiated messages). `message` is also stored locally
-    so agents see what was conveyed even though Meta renders the approved template.
+    For "created", "closed" and "feedback" kinds we send an approved **template**
+    (Meta requires a template for business-initiated messages). `message` is also
+    stored locally so agents see what was conveyed even though Meta renders the
+    approved template.
 
     Env vars:
-      WHATSAPP_TEMPLATE_CREATED — template name for ticket-created notifications
-      WHATSAPP_TEMPLATE_CLOSED  — template name for ticket-closed notifications
-      WHATSAPP_TEMPLATE_LANG    — template language code (e.g. en_US)
+      WHATSAPP_TEMPLATE_CREATED  — template name for ticket-created notifications
+      WHATSAPP_TEMPLATE_CLOSED   — template name for ticket-closed notifications
+      WHATSAPP_TEMPLATE_FEEDBACK — template name for feedback / rating request
+      WHATSAPP_TEMPLATE_LANG     — template language code (e.g. en_US)
     """
     version = os.environ.get("WHATSAPP_GRAPH_VERSION", "v21.0")
     phone_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
@@ -529,6 +538,7 @@ async def send_whatsapp_message(mobile: str, message: str, ticket_id: str, kind:
     tpl_map = {
         "created": os.environ.get("WHATSAPP_TEMPLATE_CREATED"),
         "closed": os.environ.get("WHATSAPP_TEMPLATE_CLOSED"),
+        "feedback": os.environ.get("WHATSAPP_TEMPLATE_FEEDBACK"),
     }
     template_name = tpl_map.get(kind)
 
@@ -559,10 +569,18 @@ async def send_whatsapp_message(mobile: str, message: str, ticket_id: str, kind:
     if template_name:
         components = []
         if template_params:
-            components = [{
+            components.append({
                 "type": "body",
                 "parameters": [{"type": "text", "text": str(p)} for p in template_params],
-            }]
+            })
+        if button_url_params:
+            for idx, val in enumerate(button_url_params):
+                components.append({
+                    "type": "button",
+                    "sub_type": "url",
+                    "index": str(idx),
+                    "parameters": [{"type": "text", "text": str(val)}],
+                })
         payload = {
             "messaging_product": "whatsapp",
             "to": to,
@@ -682,20 +700,30 @@ async def list_whatsapp_messages(
 
 class WhatsappTestIn(BaseModel):
     mobile: str
-    kind: Literal["created", "closed"] = "created"
+    kind: Literal["created", "closed", "feedback"] = "created"
+    ticket_number: Optional[str] = None
+    customer_name: Optional[str] = None
 
 
 @api.post("/whatsapp/test")
 async def whatsapp_test(payload: WhatsappTestIn, _: dict = Depends(require_admin)):
     """Send a test WhatsApp message to verify Meta integration end-to-end."""
+    tnum = payload.ticket_number or "TKT-TEST"
+    cname = payload.customer_name or "Test User"
+    button_params = None
     if payload.kind == "created":
-        tpl_params = ["Test User", "TKT-TEST", "Test Issue"]
-    else:
-        tpl_params = ["Test User", "TKT-TEST", "Test Issue", "Test Agent"]
+        tpl_params = [cname, tnum, "Test Issue"]
+    elif payload.kind == "closed":
+        tpl_params = [cname, tnum, "Test Issue", "Test Agent"]
+    else:  # feedback
+        tpl_params = [cname, tnum]
+        button_params = [tnum]
     doc = await send_whatsapp_message(
         payload.mobile,
         f"[TEST] Ticket {payload.kind} notification — please ignore.",
-        "test", payload.kind, template_params=tpl_params,
+        "test", payload.kind,
+        template_params=tpl_params,
+        button_url_params=button_params,
     )
     doc.pop("_id", None)
     return doc
@@ -922,14 +950,21 @@ async def change_status(ticket_id: str, payload: TicketStatusIn, user: dict = De
                 t.get("assigned_to_name") or "Support Team",
             ],
         )
-        # Follow up with a free-text 1-click rating link (works inside the 24h window)
+        # Follow up with the feedback / rating request template (URL button → 1-click rate)
         rate_base = os.environ.get("PUBLIC_RATE_BASE_URL", "").rstrip("/")
-        if rate_base:
-            rate_url = f"{rate_base}/rate/{t['ticket_number']}"
-            follow_up = (
-                f"How was your experience? Rate ticket {t['ticket_number']} in 1 click: {rate_url}"
-            )
-            await send_whatsapp_text_freeform(t["customer_mobile"], follow_up, ticket_id, "rating_request")
+        rate_url = f"{rate_base}/rate/{t['ticket_number']}" if rate_base else t["ticket_number"]
+        follow_up_msg = (
+            f"How was your experience with ticket {t['ticket_number']}? "
+            f"Tap to rate: {rate_url}"
+        )
+        await send_whatsapp_message(
+            t["customer_mobile"], follow_up_msg, ticket_id, "feedback",
+            template_params=[
+                t.get("customer_name") or "Customer",
+                t["ticket_number"],
+            ],
+            button_url_params=[t["ticket_number"]],
+        )
 
     return await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
 
